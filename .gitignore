@@ -1,0 +1,10 @@
+node_modules/
+out/
+dist/
+coverage/
+*.vsix
+.vscode-test/
+.DS_Store
+.env
+.env.*
+!.env.example

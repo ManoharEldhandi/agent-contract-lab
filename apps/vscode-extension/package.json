@@ -1,0 +1,114 @@
+{
+  "name": "agent-contract-lab",
+  "displayName": "Agent Contract Lab",
+  "description": "Evidence-based contracts for AI coding agents",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.137.0"
+  },
+  "categories": [
+    "Testing",
+    "Other"
+  ],
+  "activationEvents": [],
+  "main": "./dist/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "agent-contract-lab.startMonitoredRun",
+        "title": "Start Monitored Run",
+        "category": "Agent Contract Lab"
+      },
+      {
+        "command": "agent-contract-lab.connectSupervisor",
+        "title": "Connect Local Supervisor",
+        "category": "Agent Contract Lab"
+      },
+      {
+        "command": "agent-contract-lab.openEffectiveInstructions",
+        "title": "Open Effective Instructions",
+        "category": "Agent Contract Lab"
+      },
+      {
+        "command": "agent-contract-lab.runContractSuite",
+        "title": "Run Contract Suite",
+        "category": "Agent Contract Lab"
+      },
+      {
+        "command": "agent-contract-lab.exportEvidenceBundle",
+        "title": "Export Evidence Bundle",
+        "category": "Agent Contract Lab"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "agent-contract-lab",
+          "title": "Agent Contracts",
+          "icon": "media/agent-contract-lab.svg"
+        }
+      ]
+    },
+    "views": {
+      "agent-contract-lab": [
+        {
+          "id": "agent-contract-lab.session",
+          "name": "Session"
+        },
+        {
+          "id": "agent-contract-lab.instructions",
+          "name": "Effective Instructions"
+        },
+        {
+          "id": "agent-contract-lab.policies",
+          "name": "Policies"
+        },
+        {
+          "id": "agent-contract-lab.contracts",
+          "name": "Contracts"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Agent Contract Lab",
+      "properties": {
+        "agent-contract-lab.supervisorUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:43199",
+          "description": "Loopback URL for the local Agent Contract Lab supervisor.",
+          "scope": "machine"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "npm run check-types && npm run lint && node esbuild.js",
+    "watch": "npm-run-all -p watch:*",
+    "watch:esbuild": "node esbuild.js --watch",
+    "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
+    "package": "npm run check-types && npm run lint && node esbuild.js --production",
+    "compile-tests": "tsc -p . --outDir out",
+    "watch-tests": "tsc -p . -w --outDir out",
+    "pretest": "npm run compile-tests && npm run compile && npm run lint",
+    "check-types": "tsc --noEmit",
+    "lint": "eslint src",
+    "test": "vscode-test"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.137.0",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "24.x",
+    "typescript-eslint": "^8.61.1",
+    "eslint": "^10.5.0",
+    "esbuild": "^0.28.1",
+    "npm-run-all": "^4.1.5",
+    "typescript": "^6.0.3",
+    "@vscode/test-cli": "^0.0.15",
+    "@vscode/test-electron": "^3.0.0"
+  },
+  "overrides": {
+    "diff": "^8.0.4",
+    "serialize-javascript": "^7.0.6"
+  }
+}
