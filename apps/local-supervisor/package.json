@@ -1,0 +1,20 @@
+{
+  "name": "@agent-contract-lab/local-supervisor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Trusted local runtime and API host for Agent Contract Lab",
+  "license": "MIT",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "agent-contract-supervisor": "dist/main.js"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "start": "node dist/main.js",
+    "test": "node --enable-source-maps --test \"dist/**/*.test.js\""
+  },
+  "dependencies": {
+    "@agent-contract-lab/event-schema": "*"
+  }
+}

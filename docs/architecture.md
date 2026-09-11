@@ -20,6 +20,12 @@ Ship a VS Code extension as the primary developer experience, not as the entire 
 
 ## Components
 
+### CLI
+
+The CLI is the first backend-complete reference client and the primary headless interface. It starts or connects to the local supervisor, renders live committed events, queries historical evidence, runs contracts, and requests exports. It does not collect evidence, evaluate policy, or maintain a second local database.
+
+The CLI and supervisor initially ship together for version compatibility, but remain separate processes and package boundaries. See [Local-first CLI and supervisor architecture](local-first-cli-architecture.md) for the target process model, command surface, evidence pipeline, storage design, retrieval boundary, and incremental delivery slices.
+
 ### VS Code extension
 
 The extension owns user interaction only:
@@ -101,3 +107,5 @@ Repository-controlled instructions are test inputs. They cannot weaken organizat
 - Supervisor <-> adapters: adapter SDK with capability declarations and canonical event emission.
 - CLI <-> supervisor: the same public API used by the extension.
 - CI: CLI emits JUnit/SARIF-like machine output plus an evidence artifact; exact formats are an ADR decision.
+
+ADR 0003 proposes HTTP over an operating-system local endpoint, a structured bootstrap health response, resumable committed-event streams, and a separate transient terminal channel. It remains proposed until its validation criteria pass.
