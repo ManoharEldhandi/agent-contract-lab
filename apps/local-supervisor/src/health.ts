@@ -32,7 +32,7 @@ export function buildHealthResponse(identity: SupervisorIdentity, overrides: Hea
 		startedAt: identity.startedAt,
 		capabilities: {
 			adapters: overrides.adapters ?? [],
-			features: overrides.features ?? ['health'],
+			features: overrides.features ?? ['health', 'sessions', 'event-log', 'managed-process', 'workspace-trust', 'integration-ingest', 'policy-evaluation'],
 		},
 	};
 }

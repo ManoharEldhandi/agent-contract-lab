@@ -1,5 +1,6 @@
 import * as assert from 'assert';
 import { formatInstructionSourceCount, instructionPatterns } from '../instructionSources';
+import { evidenceBundlePath, parseCommandArray, sessionEventQueryPath } from '../supervisorApi';
 import { describeConnection, interpretHealthJson } from '../supervisorClient';
 
 suite('Extension Test Suite', () => {
@@ -45,5 +46,36 @@ suite('Supervisor client', () => {
 		const detail = describeConnection(interpretHealthJson(validHealth));
 		assert.ok(detail.label.includes('connected'));
 		assert.ok(detail.detail.length > 0);
+	});
+});
+
+suite('Managed command input', () => {
+	test('accepts an explicit string argument vector and rejects shell-like input', () => {
+		assert.deepStrictEqual(parseCommandArray('["npm", "test", "--", "file name"]'), ['npm', 'test', '--', 'file name']);
+		assert.strictEqual(parseCommandArray('npm test'), undefined);
+		assert.strictEqual(parseCommandArray('["npm", 1]'), undefined);
+		assert.strictEqual(parseCommandArray('[]'), undefined);
+	});
+});
+
+suite('Session event query', () => {
+	test('builds a resumable, filterable event query', () => {
+		const path = sessionEventQueryPath('ses/demo', {
+			afterSequence: 4, kinds: ['file.changed', 'command.completed'], grades: ['observed-boundary'], actors: ['boundary'], path: 'src/app', command: 'npm test',
+		});
+		const url = new URL(path, 'http://localhost');
+		assert.strictEqual(url.pathname, '/v1/sessions/ses%2Fdemo/events');
+		assert.strictEqual(url.searchParams.get('afterSequence'), '4');
+		assert.deepStrictEqual(url.searchParams.getAll('kind'), ['file.changed', 'command.completed']);
+		assert.strictEqual(url.searchParams.get('grade'), 'observed-boundary');
+		assert.strictEqual(url.searchParams.get('actor'), 'boundary');
+		assert.strictEqual(url.searchParams.get('path'), 'src/app');
+		assert.strictEqual(url.searchParams.get('command'), 'npm test');
+	});
+});
+
+suite('Evidence bundle API', () => {
+	test('builds an encoded session evidence bundle path', () => {
+		assert.strictEqual(evidenceBundlePath('ses/demo'), '/v1/sessions/ses%2Fdemo/evidence-bundle');
 	});
 });

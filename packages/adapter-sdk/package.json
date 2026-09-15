@@ -1,0 +1,22 @@
+{
+  "name": "@agent-contract-lab/adapter-sdk",
+  "version": "0.1.0",
+  "description": "Local integration client for Agent Contract Lab evidence sessions",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ManoharEldhandi/agent-contract-lab.git"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "test": "node --enable-source-maps --test \"dist/**/*.test.js\""
+  },
+  "dependencies": {
+    "@agent-contract-lab/event-schema": "^0.1.0"
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "name": "@agent-contract-lab/policy-engine",
+  "version": "0.1.0",
+  "description": "Deterministic policy evaluation for Agent Contract Lab evidence",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ManoharEldhandi/agent-contract-lab.git"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "test": "node --enable-source-maps --test \"dist/**/*.test.js\""
+  },
+  "dependencies": {
+    "@agent-contract-lab/event-schema": "^0.1.0",
+    "minimatch": "^10.2.4"
+  }
+}

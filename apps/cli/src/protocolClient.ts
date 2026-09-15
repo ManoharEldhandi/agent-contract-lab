@@ -1,6 +1,11 @@
 import { isApiCompatible, parseHealthResponse, type HealthResponse, type ParseIssue } from '@agent-contract-lab/event-schema';
 
-export type FetchLike = (input: string | URL, init?: { method?: string; signal?: AbortSignal }) => Promise<Response>;
+export type FetchLike = (input: string | URL, init?: {
+	readonly method?: string;
+	readonly signal?: AbortSignal;
+	readonly headers?: Record<string, string>;
+	readonly body?: string;
+}) => Promise<Response>;
 
 export type HealthOutcome =
 	| { readonly kind: 'ok'; readonly url: string; readonly health: HealthResponse }

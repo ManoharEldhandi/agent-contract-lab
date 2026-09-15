@@ -1,5 +1,16 @@
 # Delivery Roadmap
 
+## Implemented v0 workflow additions
+
+- Claude Code hook and Codex App Server notification mapping bridges, preserving `model-declared` provenance and unknown input gaps.
+- Resumable filtered supervisor event queries, CLI `watch`, and VS Code session-log following.
+- Redacted supervisor-owned Git diff snapshots used by filesystem-diff contract evidence.
+- Versioned standard-rate cost reports, exposed through `agent-contract cost`.
+- Trusted detached Git worktree execution with `agent-contract run --isolated` and explicit lifecycle evidence.
+- Portable redacted JSON evidence bundles with canonical SHA-256 manifests, CLI export/verify, and VS Code export.
+
+See ADRs 0005 and 0006 for the isolation and bundle boundaries. These additions do not claim a full OS sandbox, process-managed vendor adapter, signed bundle provenance, or hosted CI service.
+
 ## Phase 0: Foundation
 
 Outcome: an installable local-first path from both clients to a real trusted supervisor, followed by the smallest useful evidence and finding loop.

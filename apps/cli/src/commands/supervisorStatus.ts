@@ -6,10 +6,10 @@ import { renderStatusPretty, writeStatusJson } from '../render';
 export async function supervisorStatusCommand(context: CommandContext): Promise<ExitCode> {
 	const outcome = await fetchHealth(context.supervisorUrl, { fetchImpl: context.fetchImpl });
 
-	if (context.format === 'json') {
-		writeStatusJson(context, 'supervisor.status', outcome);
-	} else {
+	if (context.format === 'pretty') {
 		renderStatusPretty(context, outcome);
+	} else {
+		writeStatusJson(context, 'supervisor.status', outcome);
 	}
 
 	switch (outcome.kind) {

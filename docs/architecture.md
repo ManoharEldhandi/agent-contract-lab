@@ -52,6 +52,8 @@ The supervisor is a long-running, local-first process. It owns:
 
 Recommended initial runtime: TypeScript/Node.js to share types and reduce startup friction. Re-evaluate after the first adapter and sandbox prototype; a Rust execution runner may become justified for stronger process isolation and a distributable binary.
 
+The current release persists redacted session JSON and append-only event JSONL under a user-local directory. It provides authenticated loopback event queries, diff capture, versioned cost reports, detached Git-worktree execution, and portable evidence bundles. SQLite, content-addressed artifact storage, native local sockets, and OS sandboxing remain target architecture rather than current implementation.
+
 ### Adapters
 
 Each adapter translates vendor behavior into a canonical event schema and declares precise capabilities. Adapters cannot invent evidence. Unsupported data is `unknown`, not inferred.
@@ -89,7 +91,7 @@ Event ordering must be supervisor-assigned after arrival. Vendor timestamps are 
 
 ## Storage and privacy
 
-Default storage is SQLite plus content-addressed artifact files under a user-local application directory. Workspace data remains local. Upload, report sharing, and any telemetry are explicit opt-in actions. Redaction runs before durable storage and before export; raw unredacted event data is not a required retained layer.
+Current v0 storage is redacted JSON/JSONL under a user-local application directory; SQLite plus content-addressed artifacts is the target storage evolution. Workspace data remains local. Upload, report sharing, and any telemetry are explicit opt-in actions. Redaction runs before durable storage and before export; raw unredacted event data is not a required retained layer.
 
 ## Trust boundaries
 

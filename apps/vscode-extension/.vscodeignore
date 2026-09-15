@@ -1,5 +1,15 @@
 .vscode/**
 .vscode-test/**
+node_modules/**
+out/**
+src/**
+*.ts
+*.map
+esbuild.js
+vsc-extension-quickstart.md
+AGENTS.md
+HANDOFF.md.vscode/**
+.vscode-test/**
 out/**
 node_modules/**
 src/**

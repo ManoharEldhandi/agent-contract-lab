@@ -1,11 +1,17 @@
 {
   "name": "@agent-contract-lab/local-supervisor",
   "version": "0.1.0",
-  "private": true,
   "description": "Trusted local runtime and API host for Agent Contract Lab",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ManoharEldhandi/agent-contract-lab.git"
+  },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "publishConfig": {
+    "access": "public"
+  },
   "bin": {
     "agent-contract-supervisor": "dist/main.js"
   },
@@ -15,6 +21,8 @@
     "test": "node --enable-source-maps --test \"dist/**/*.test.js\""
   },
   "dependencies": {
-    "@agent-contract-lab/event-schema": "*"
+    "@agent-contract-lab/event-schema": "^0.1.0",
+    "@agent-contract-lab/policy-engine": "^0.1.0",
+    "yaml": "^2.8.2"
   }
 }

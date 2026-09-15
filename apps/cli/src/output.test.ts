@@ -23,6 +23,7 @@ test('resolveFormat defaults by TTY and validates explicit values', () => {
 	assert.equal(resolveFormat(undefined, false), 'json');
 	assert.equal(resolveFormat('json', true), 'json');
 	assert.equal(resolveFormat('pretty', false), 'pretty');
+	assert.equal(resolveFormat('jsonl', true), 'jsonl');
 	assert.equal(resolveFormat('xml', false), undefined);
 });
 
