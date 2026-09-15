@@ -5,6 +5,8 @@ import type { HealthResponse } from '@agent-contract-lab/event-schema';
 
 import { buildHealthResponse, createIdentity } from './health';
 import { route } from './router';
+import { SupervisorService } from './service';
+import { defaultDataDirectory } from './state';
 import { SUPERVISOR_VERSION } from './version';
 
 /** Hosts the supervisor may bind to. Never a routable remote address. */
@@ -16,6 +18,9 @@ export interface StartOptions {
 	/** Port to bind; 0 selects an ephemeral port (used by tests). */
 	readonly port?: number;
 	readonly now?: () => Date;
+	readonly dataDirectory?: string;
+	/** Test-only override. Production tokens are created in the local data directory. */
+	readonly authToken?: string;
 }
 
 export interface RunningSupervisor {
@@ -23,33 +28,72 @@ export interface RunningSupervisor {
 	readonly host: string;
 	readonly port: number;
 	readonly instanceId: string;
+	readonly authToken: string;
 	close(): Promise<void>;
 }
 
-export function createRequestListener(health: HealthResponse): RequestListener {
-	return (req, res) => {
-		// Discard any request body so the socket can be reused.
+function respond(res: import('node:http').ServerResponse, statusCode: number, body: unknown, headOnly: boolean): void {
+	const payload = JSON.stringify(body);
+	res.writeHead(statusCode, {
+		'content-type': 'application/json; charset=utf-8',
+		'content-length': Buffer.byteLength(payload),
+	});
+	res.end(headOnly ? undefined : payload);
+}
+
+async function readJsonBody(req: import('node:http').IncomingMessage, maximumBytes: number): Promise<unknown> {
+	if (req.method === 'GET' || req.method === 'HEAD') {
 		req.resume();
-
-		const method = req.method ?? 'GET';
-		let pathname = '/';
-		try {
-			pathname = new URL(req.url ?? '/', 'http://localhost').pathname;
-		} catch {
-			pathname = '/';
+		return undefined;
+	}
+	const chunks: Buffer[] = [];
+	let size = 0;
+	for await (const chunk of req) {
+		const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+		size += buffer.length;
+		if (size > maximumBytes) {
+			throw new Error(`request body exceeds ${maximumBytes} bytes`);
 		}
+		chunks.push(buffer);
+	}
+	if (size === 0) {
+		return undefined;
+	}
+	return JSON.parse(Buffer.concat(chunks).toString('utf8'));
+}
 
-		const result = route(method, pathname, { health });
-		const payload = JSON.stringify(result.body);
-		res.writeHead(result.statusCode, {
-			'content-type': 'application/json; charset=utf-8',
-			'content-length': Buffer.byteLength(payload),
-		});
-		if (method === 'HEAD') {
-			res.end();
-		} else {
-			res.end(payload);
-		}
+export function createRequestListener(health: HealthResponse, service?: SupervisorService): RequestListener {
+	return (req, res) => {
+		void (async () => {
+
+			const method = req.method ?? 'GET';
+			let pathname = '/';
+			let query: URLSearchParams | undefined;
+			try {
+				const url = new URL(req.url ?? '/', 'http://localhost');
+				pathname = url.pathname;
+				query = url.searchParams;
+			} catch {
+				pathname = '/';
+			}
+
+			if (pathname === '/health' || service === undefined) {
+				// Discard any request body so the socket can be reused.
+				req.resume();
+				const result = route(method, pathname, { health });
+				respond(res, result.statusCode, result.body, method === 'HEAD');
+				return;
+			}
+			try {
+				const body = await readJsonBody(req, service.maxRequestBytes);
+				const authorization = req.headers['x-agent-contract-token'];
+				const result = await service.handle({ method, pathname, query, authorization: typeof authorization === 'string' ? authorization : undefined, body });
+				respond(res, result.statusCode, result.body, method === 'HEAD');
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				respond(res, 400, { error: { code: 'invalid_request', message } }, method === 'HEAD');
+			}
+		})();
 	};
 }
 
@@ -66,19 +110,30 @@ export async function startSupervisor(options: StartOptions = {}): Promise<Runni
 
 	const identity = createIdentity(options.version ?? SUPERVISOR_VERSION, options.now?.() ?? new Date());
 	const health = buildHealthResponse(identity);
-	const server: Server = createServer(createRequestListener(health));
-
-	await new Promise<void>((resolve, reject) => {
-		const onError = (error: Error): void => {
-			server.removeListener('error', onError);
-			reject(error);
-		};
-		server.once('error', onError);
-		server.listen(options.port ?? 0, host, () => {
-			server.removeListener('error', onError);
-			resolve();
-		});
+	const service = await SupervisorService.open({
+		dataDirectory: options.dataDirectory ?? defaultDataDirectory(),
+		authToken: options.authToken,
+		instanceId: identity.instanceId,
+		now: options.now,
 	});
+	const server: Server = createServer(createRequestListener(health, service));
+
+	try {
+		await new Promise<void>((resolve, reject) => {
+			const onError = (error: Error): void => {
+				server.removeListener('error', onError);
+				reject(error);
+			};
+			server.once('error', onError);
+			server.listen(options.port ?? 0, host, () => {
+				server.removeListener('error', onError);
+				resolve();
+			});
+		});
+	} catch (error) {
+		await service.close();
+		throw error;
+	}
 
 	const address = server.address() as AddressInfo;
 	return {
@@ -86,8 +141,10 @@ export async function startSupervisor(options: StartOptions = {}): Promise<Runni
 		host,
 		port: address.port,
 		instanceId: identity.instanceId,
-		close: () =>
-			new Promise<void>((resolve, reject) => {
+		authToken: service.token,
+		close: async (): Promise<void> => {
+			try {
+				await new Promise<void>((resolve, reject) => {
 				if (!server.listening) {
 					resolve();
 					return;
@@ -99,6 +156,10 @@ export async function startSupervisor(options: StartOptions = {}): Promise<Runni
 						resolve();
 					}
 				});
-			}),
+				});
+			} finally {
+				await service.close();
+			}
+		},
 	};
 }

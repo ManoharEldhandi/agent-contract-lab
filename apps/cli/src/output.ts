@@ -5,7 +5,7 @@ export interface OutputStream {
 	readonly isTTY?: boolean;
 }
 
-export type OutputFormat = 'pretty' | 'json';
+export type OutputFormat = 'pretty' | 'json' | 'jsonl';
 
 /**
  * Resolves color usage. `NO_COLOR` (any value) disables; `FORCE_COLOR` enables;
@@ -26,7 +26,7 @@ export function resolveFormat(requested: string | undefined, isTTY: boolean): Ou
 	if (requested === undefined) {
 		return isTTY ? 'pretty' : 'json';
 	}
-	if (requested === 'pretty' || requested === 'json') {
+	if (requested === 'pretty' || requested === 'json' || requested === 'jsonl') {
 		return requested;
 	}
 	return undefined;
@@ -57,4 +57,9 @@ export function writeLine(stream: OutputStream, text = ''): void {
 /** Serializes a versioned result object for `--format json`. */
 export function writeJson(stream: OutputStream, value: unknown): void {
 	stream.write(`${JSON.stringify(value, null, 2)}\n`);
+}
+
+/** Emits one compact JSON object per line for streaming and command pipelines. */
+export function writeJsonLine(stream: OutputStream, value: unknown): void {
+	stream.write(`${JSON.stringify(value)}\n`);
 }

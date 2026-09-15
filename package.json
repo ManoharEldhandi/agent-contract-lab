@@ -17,7 +17,11 @@
     "clean": "tsc -b --clean",
     "typecheck": "tsc -b",
     "test": "npm run build && npm run test:workspaces",
-    "test:workspaces": "npm run test --workspaces --if-present"
+    "test:workspaces": "npm run test --workspaces --if-present",
+    "supervisor": "node apps/local-supervisor/dist/main.js",
+    "cli": "node apps/cli/dist/bin.js",
+    "package:extension": "npm --prefix apps/vscode-extension run vsix",
+    "pack:check": "npm run build && npm pack --dry-run --workspace @agent-contract-lab/event-schema && npm pack --dry-run --workspace @agent-contract-lab/policy-engine && npm pack --dry-run --workspace @agent-contract-lab/local-supervisor && npm pack --dry-run --workspace @agent-contract-lab/cli && npm pack --dry-run --workspace @agent-contract-lab/adapter-sdk"
   },
   "devDependencies": {
     "@types/node": "24.x",

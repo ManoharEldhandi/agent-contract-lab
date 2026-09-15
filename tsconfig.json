@@ -2,6 +2,8 @@
   "files": [],
   "references": [
     { "path": "packages/event-schema" },
+    { "path": "packages/adapter-sdk" },
+    { "path": "packages/policy-engine" },
     { "path": "apps/local-supervisor" },
     { "path": "apps/cli" }
   ]

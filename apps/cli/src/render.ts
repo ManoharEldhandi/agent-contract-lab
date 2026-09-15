@@ -1,5 +1,5 @@
 import type { HealthOutcome } from './protocolClient';
-import { colorize, writeJson, writeLine } from './output';
+import { colorize, writeJson, writeJsonLine, writeLine } from './output';
 import { SUPPORTED_API_MAJOR } from '@agent-contract-lab/event-schema';
 import type { CommandContext } from './context';
 
@@ -59,5 +59,10 @@ export function renderStatusPretty(context: CommandContext, outcome: HealthOutco
 }
 
 export function writeStatusJson(context: CommandContext, command: string, outcome: HealthOutcome): void {
-	writeJson(context.stdout, { schemaVersion: 1, command, result: summarizeOutcome(outcome) });
+	const output = { schemaVersion: 1, command, result: summarizeOutcome(outcome) };
+	if (context.format === 'jsonl') {
+		writeJsonLine(context.stdout, output);
+	} else {
+		writeJson(context.stdout, output);
+	}
 }

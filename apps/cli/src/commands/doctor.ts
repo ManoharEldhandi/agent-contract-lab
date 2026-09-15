@@ -2,7 +2,7 @@ import { SCHEMA_VERSION, SUPPORTED_API_MAJOR } from '@agent-contract-lab/event-s
 
 import { CLI_VERSION, ExitCode } from '../constants';
 import type { CommandContext } from '../context';
-import { colorize, writeJson, writeLine } from '../output';
+import { colorize, writeJson, writeJsonLine, writeLine } from '../output';
 import { fetchHealth, type HealthOutcome } from '../protocolClient';
 
 export type CheckStatus = 'ok' | 'warn' | 'fail';
@@ -78,6 +78,8 @@ export async function doctorCommand(context: CommandContext, options: DoctorOpti
 
 	if (context.format === 'json') {
 		writeJson(context.stdout, { schemaVersion: 1, command: 'doctor', ok, checks });
+	} else if (context.format === 'jsonl') {
+		writeJsonLine(context.stdout, { schemaVersion: 1, command: 'doctor', ok, checks });
 	} else {
 		writeLine(context.stdout, colorize('agent-contract doctor', 'bold', context.color));
 		for (const check of checks) {

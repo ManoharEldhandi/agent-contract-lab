@@ -1,0 +1,9 @@
+version: 1
+name: no-destructive-command
+assertions:
+  commands:
+    deny:
+      - "rm -rf *"
+  evidence:
+    require:
+      - command-result
