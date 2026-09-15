@@ -2,12 +2,43 @@
 
 ## Phase 0: Foundation
 
-Outcome: a trustworthy skeleton with clear contracts, not a fake dashboard.
+Outcome: an installable local-first path from both clients to a real trusted supervisor, followed by the smallest useful evidence and finding loop.
+
+Deliver this phase as four independently validated slices:
+
+### Phase 0A: Shared schema and health
 
 - Establish monorepo tooling, docs, TypeScript extension baseline, and ADR template.
 - Implement canonical types for session, event, evidence grade, capability, policy decision, and contract verdict.
-- Implement supervisor health protocol and extension connection state.
-- Define fixture repository format and deterministic path policy prototype.
+- Implement a loopback-only structured supervisor health protocol.
+- Add only real CLI `doctor` and `supervisor status` commands backed by that endpoint.
+- Update the extension connection state to parse and display the same response.
+
+Exit criterion: CLI and extension report one compatible supervisor version and its real zero-adapter capability set.
+
+### Phase 0B: Local lifecycle and trust
+
+- Add explicit supervisor start, foreground, status, and stop behavior.
+- Add a per-user process lock, local state paths, authenticated sensitive endpoints, and version negotiation.
+- Add user-local CLI workspace trust without allowing repository files to trust themselves.
+
+Exit criterion: the installed CLI manages exactly one authenticated, unprivileged supervisor instance.
+
+### Phase 0C: Live and historical boundary evidence
+
+- Add a trusted generic process runner as `observed-boundary` evidence, without presenting it as a vendor adapter.
+- Persist session lifecycle, redacted stdout/stderr chunks, process exit, interruption, and explicit truncation.
+- Add resumable CLI watch and exact historical event queries.
+
+Exit criterion: a real local fixture command produces a committed live stream that can be disconnected, resumed, and queried by sequence.
+
+### Phase 0D: First deterministic finding
+
+- Define the fixture repository format and one deterministic path or command rule.
+- Persist the compiled ruleset hash, input evidence, decision, and user-facing finding.
+- Prove a missing pre-action capability yields `unknown` rather than a prevention claim.
+
+Exit criterion: the CLI resolves one reproducible finding to its retained evidence and one unsupported case to an explicit evidence gap.
 
 Exit criterion: the extension connects to a local supervisor and displays a real health/capability result.
 
@@ -15,11 +46,11 @@ Exit criterion: the extension connects to a local supervisor and displays a real
 
 Outcome: explain the repository rules that apply to an active path.
 
-- Build repository instruction discovery for a narrow, documented file set.
+- Move repository instruction discovery and precedence into supervisor-owned logic for a narrow, documented file set.
 - Render source path, precedence, content hash, target-path applicability, and evidence grade.
 - Add snapshot tests with nested path-specific instructions.
 
-Exit criterion: a user can inspect a reproducible effective-instruction map without invoking an agent.
+Exit criterion: CLI and VS Code inspect the same reproducible effective-instruction map without invoking an agent.
 
 ## Phase 2: First deep adapter and trace
 
@@ -43,7 +74,19 @@ Outcome: one realistic task can pass, fail, or return unknown in isolation.
 
 Exit criterion: intentionally compliant and non-compliant fixtures yield deterministic results.
 
-## Phase 4: Second adapter and comparison
+## Phase 4: Investigation and grounded retrieval
+
+Outcome: users can answer workflow questions from retained evidence without turning retrieval into policy.
+
+- Add structured timeline queries over sequence, resources, correlations, decisions, and findings.
+- Add FTS indexing over redacted event-aware content chunks with an explicit index watermark.
+- Add deterministic evidence briefs for common questions.
+- Add optional local model synthesis only after factual claims require resolvable citations.
+- Report facts, deterministic findings, contradictions, scope, and evidence gaps separately.
+
+Exit criterion: a workflow question returns an evidence-cited answer or an explicit insufficient-evidence result, and answer generation cannot mutate decisions.
+
+## Phase 5: Second adapter and comparison
 
 Outcome: cross-agent comparisons become meaningful rather than cosmetic.
 
@@ -53,7 +96,7 @@ Outcome: cross-agent comparisons become meaningful rather than cosmetic.
 
 Exit criterion: the tool does not compare unsupported dimensions as though they were equal.
 
-## Phase 5: CI and opt-in sharing
+## Phase 6: CI and opt-in sharing
 
 Outcome: repeatable repository checks outside an editor.
 
@@ -63,9 +106,11 @@ Outcome: repeatable repository checks outside an editor.
 
 ## Decisions to make through ADRs
 
-- Supervisor runtime and packaging strategy.
-- Local IPC transport and authentication approach.
+- Accept or revise the proposed shared CLI/supervisor runtime and local IPC approach in ADR 0003.
+- Canonical schema source and compatibility policy.
+- SQLite ledger and content-addressed artifact durability model.
 - Policy evaluator choice: TypeScript v0 versus OPA/Rego.
 - Worktree-only versus container-backed fixture isolation.
 - Evidence bundle archive/signature format.
+- Local retrieval model and any remote-provider consent boundary.
 - Data retention and any hosted-service boundaries.

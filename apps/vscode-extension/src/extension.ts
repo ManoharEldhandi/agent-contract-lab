@@ -1,11 +1,11 @@
 import * as vscode from 'vscode';
 import { discoverInstructionSources, formatInstructionSourceCount } from './instructionSources';
-
-type ConnectionState = 'not connected' | 'connected' | 'unavailable';
+import { describeConnection, probeSupervisor, type SupervisorConnection } from './supervisorClient';
 
 class ContractLabView implements vscode.TreeDataProvider<vscode.TreeItem> {
 	private readonly changeEmitter = new vscode.EventEmitter<void>();
-	private connectionState: ConnectionState = 'not connected';
+	private supervisorLabel = 'not connected';
+	private supervisorDetail = 'Run "Connect Local Supervisor" to check availability.';
 	private discoveredInstructions = 0;
 
 	readonly onDidChangeTreeData = this.changeEmitter.event;
@@ -20,7 +20,7 @@ class ContractLabView implements vscode.TreeDataProvider<vscode.TreeItem> {
 		switch (this.view) {
 			case 'session':
 				return [
-					this.item(`Local supervisor: ${this.connectionState}`, 'plug', 'agent-contract-lab.connectSupervisor'),
+					this.item(`Local supervisor: ${this.supervisorLabel}`, 'plug', 'agent-contract-lab.connectSupervisor', this.supervisorDetail),
 					this.item('Start monitored run', 'play', 'agent-contract-lab.startMonitoredRun'),
 				];
 			case 'instructions':
@@ -41,8 +41,9 @@ class ContractLabView implements vscode.TreeDataProvider<vscode.TreeItem> {
 		}
 	}
 
-	setConnectionState(connectionState: ConnectionState): void {
-		this.connectionState = connectionState;
+	setSupervisor(label: string, detail: string): void {
+		this.supervisorLabel = label;
+		this.supervisorDetail = detail;
 		this.changeEmitter.fire();
 	}
 
@@ -51,9 +52,12 @@ class ContractLabView implements vscode.TreeDataProvider<vscode.TreeItem> {
 		this.changeEmitter.fire();
 	}
 
-	private item(label: string, icon: string, command?: string): vscode.TreeItem {
+	private item(label: string, icon: string, command?: string, tooltip?: string): vscode.TreeItem {
 		const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.None);
 		item.iconPath = new vscode.ThemeIcon(icon);
+		if (tooltip) {
+			item.tooltip = tooltip;
+		}
 		if (command) {
 			item.command = { command, title: label };
 		}
@@ -77,8 +81,10 @@ export function activate(context: vscode.ExtensionContext): void {
 				return;
 			}
 
-			const connected = await connectToSupervisor(output);
-			sessionView.setConnectionState(connected ? 'connected' : 'unavailable');
+			const connection = await connectToSupervisor(output);
+			const { label, detail } = describeConnection(connection);
+			sessionView.setSupervisor(label, detail);
+			reportConnection(connection);
 		}),
 		vscode.commands.registerCommand('agent-contract-lab.openEffectiveInstructions', async () => {
 			const sources = await discoverInstructionSources();
@@ -114,39 +120,44 @@ function requireTrustedWorkspace(): boolean {
 	return false;
 }
 
-async function connectToSupervisor(output: vscode.OutputChannel): Promise<boolean> {
+async function connectToSupervisor(output: vscode.OutputChannel): Promise<SupervisorConnection> {
 	const configuredUrl = vscode.workspace.getConfiguration('agent-contract-lab').get<string>('supervisorUrl');
 	if (!configuredUrl) {
-		vscode.window.showErrorMessage('Agent Contract Lab has no configured supervisor URL.');
-		return false;
+		return { kind: 'unreachable', message: 'No supervisor URL is configured.' };
 	}
 
 	let url: URL;
 	try {
 		url = new URL(configuredUrl);
 	} catch {
-		vscode.window.showErrorMessage('Agent Contract Lab supervisor URL is invalid.');
-		return false;
+		return { kind: 'unreachable', message: `Invalid supervisor URL: ${configuredUrl}` };
 	}
 
-	if (!['127.0.0.1', 'localhost', '::1'].includes(url.hostname)) {
-		vscode.window.showErrorMessage('Agent Contract Lab connects only to a local supervisor endpoint.');
-		return false;
+	const host = url.hostname.replace(/^\[(.+)\]$/, '$1');
+	if (!['127.0.0.1', 'localhost', '::1'].includes(host)) {
+		return { kind: 'unreachable', message: `Supervisor URL must be loopback, received ${host}.` };
 	}
 
-	try {
-		const response = await fetch(new URL('/health', url), { signal: AbortSignal.timeout(1500) });
-		if (!response.ok) {
-			throw new Error(`Supervisor returned HTTP ${response.status}.`);
-		}
-		output.appendLine(`Connected to local supervisor at ${url.origin}.`);
-		vscode.window.showInformationMessage('Connected to the Agent Contract Lab supervisor.');
-		return true;
-	} catch (error) {
-		const message = error instanceof Error ? error.message : 'Unknown connection error.';
-		output.appendLine(`Supervisor connection failed: ${message}`);
-		vscode.window.showWarningMessage('Local supervisor is unavailable. Start it before monitoring a run.');
-		return false;
+	const connection = await probeSupervisor(url);
+	output.appendLine(`Supervisor probe at ${url.origin}: ${connection.kind}`);
+	return connection;
+}
+
+function reportConnection(connection: SupervisorConnection): void {
+	switch (connection.kind) {
+		case 'connected':
+			vscode.window.showInformationMessage(`Connected to the Agent Contract Lab supervisor ${connection.health.supervisorVersion}.`);
+			return;
+		case 'incompatible':
+			vscode.window.showWarningMessage(`Supervisor API ${connection.health.apiVersion} is not compatible with this extension.`);
+			return;
+		case 'http-error':
+		case 'malformed':
+			vscode.window.showWarningMessage('The local supervisor responded but its health could not be verified.');
+			return;
+		case 'unreachable':
+			vscode.window.showWarningMessage('Local supervisor is unavailable. Start it before monitoring a run.');
+			return;
 	}
 }
 

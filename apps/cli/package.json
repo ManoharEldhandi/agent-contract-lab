@@ -1,0 +1,19 @@
+{
+  "name": "@agent-contract-lab/cli",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local-first command-line client for Agent Contract Lab",
+  "license": "MIT",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "agent-contract": "dist/bin.js"
+  },
+  "scripts": {
+    "build": "tsc -b",
+    "test": "node --enable-source-maps --test \"dist/**/*.test.js\""
+  },
+  "dependencies": {
+    "@agent-contract-lab/event-schema": "*"
+  }
+}

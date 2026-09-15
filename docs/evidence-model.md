@@ -22,12 +22,17 @@ The platform reports observable evidence, deterministic derivations, and explici
 
 `unknown` is a useful result. It distinguishes a policy failure from an integration capability gap.
 
+Every unknown result includes at least one reason: unsupported capability, qualifying evidence not observed, redacted evidence, truncation, retention, adapter error, integrity failure, timeout, or ambiguity. An evaluator that does not implement a rule rejects that rule before execution rather than returning unknown.
+
 ## Claim rules
 
 - “Followed instruction X” requires a direct vendor signal or an explicitly scoped behavioral assertion, never only a successful output.
 - “Ran required test Y” requires a retained process/tool event or command result.
 - “Changed only allowed files” requires snapshot/diff evidence.
 - “Agent intended Z” is out of scope unless an adapter carries an explicit, separately graded declaration.
+- `observed-boundary` proves that an action or effect occurred at the monitored boundary. It does not prove the agent noticed the result, understood it, or acted because of an instruction.
+- Repeated commands and tests remain separate evidence. Assertions must state whether any, latest, or all matching results determine the outcome.
+- Rules declare acceptable evidence grades explicitly. `model-declared` cannot satisfy a high-risk built-in rule and is never silently promoted to native or boundary observation.
 
 ## Evidence bundle
 

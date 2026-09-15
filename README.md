@@ -6,12 +6,13 @@ The VS Code extension is the daily developer interface. A local supervisor will 
 
 ## Status
 
-This repository contains the product foundation and a compiling VS Code extension shell. The first implementation milestone is effective-instruction discovery, followed by a local supervisor health protocol, a Claude Code adapter, and deterministic path/test contracts.
+This repository contains the product foundation and a compiling VS Code extension shell. The current implementation milestone is a shared schema plus structured local-supervisor health, exposed through an installable CLI and the extension. Persisted live boundary events and one deterministic finding follow as separately validated slices.
 
 ## Read First
 
 - [Product vision](docs/product-vision.md)
 - [System architecture](docs/architecture.md)
+- [Local-first CLI and supervisor architecture](docs/local-first-cli-architecture.md)
 - [VS Code extension architecture](docs/vscode-extension-architecture.md)
 - [Evidence model](docs/evidence-model.md)
 - [Adapter capability matrix](docs/adapter-capability-matrix.md)
