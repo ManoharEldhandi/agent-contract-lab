@@ -2,6 +2,7 @@ import * as assert from 'assert';
 import { formatInstructionSourceCount, instructionPatterns } from '../instructionSources';
 import { evidenceBundlePath, parseCommandArray, sessionEventQueryPath } from '../supervisorApi';
 import { describeConnection, interpretHealthJson } from '../supervisorClient';
+import { bundledSupervisorPath, supervisorEnvironment } from '../supervisorRuntime';
 
 suite('Extension Test Suite', () => {
 	test('recognizes the supported repository instruction locations', () => {
@@ -77,5 +78,19 @@ suite('Session event query', () => {
 suite('Evidence bundle API', () => {
 	test('builds an encoded session evidence bundle path', () => {
 		assert.strictEqual(evidenceBundlePath('ses/demo'), '/v1/sessions/ses%2Fdemo/evidence-bundle');
+	});
+});
+
+suite('Bundled supervisor runtime', () => {
+	test('prepares a loopback-only environment for the bundled supervisor', () => {
+		const environment = supervisorEnvironment(new URL('http://localhost:43210'), { EXAMPLE: 'value' });
+		assert.strictEqual(environment.AGENT_CONTRACT_SUPERVISOR_HOST, '127.0.0.1');
+		assert.strictEqual(environment.AGENT_CONTRACT_SUPERVISOR_PORT, '43210');
+		assert.strictEqual(environment.ELECTRON_RUN_AS_NODE, '1');
+		assert.ok(bundledSupervisorPath('/extension').endsWith('/extension/dist/supervisor.js'));
+	});
+
+	test('refuses a remotely bound bundled supervisor', () => {
+		assert.throws(() => supervisorEnvironment(new URL('http://example.com:43199')), /loopback/);
 	});
 });

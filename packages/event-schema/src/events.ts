@@ -22,7 +22,9 @@ export const EVENT_KINDS = [
 	'tool.completed',
 	'command.started',
 	'command.completed',
+	'file.read',
 	'file.changed',
+	'workspace.changed',
 	'workspace.diff',
 	'worktree.created',
 	'worktree.removed',
@@ -36,6 +38,7 @@ export const EVENT_KINDS = [
 	'log.truncated',
 	'policy.decision',
 	'session.completed',
+	'session.interrupted',
 	'session.failed',
 ] as const;
 
@@ -103,6 +106,8 @@ export interface WorkspaceReference {
 export interface SessionRecord {
 	readonly schemaVersion: number;
 	readonly sessionId: string;
+	/** A redacted, user-visible task name supplied by a trusted launcher or adapter. */
+	readonly title?: string;
 	readonly runMode: RunMode;
 	readonly state: SessionState;
 	readonly actor: string;

@@ -1,3 +1,5 @@
+import { resolve } from 'node:path';
+
 import { ExitCode } from '../constants';
 import type { CommandContext } from '../context';
 import { writeJson, writeJsonLine, writeLine } from '../output';
@@ -8,7 +10,9 @@ export async function workspaceCommand(context: CommandContext, subcommand: stri
 		writeLine(context.stderr, 'Usage: agent-contract workspace <trust|status> [path]');
 		return ExitCode.InvalidInvocation;
 	}
-	const outcome = await requestSupervisor<WorkspaceResult>(context, `/v1/workspaces/${subcommand}`, 'POST', { workspacePath: workspacePath ?? process.cwd() });
+	// The supervisor runs in its own process, so relative paths must be resolved
+	// by the caller rather than accidentally against the supervisor's cwd.
+	const outcome = await requestSupervisor<WorkspaceResult>(context, `/v1/workspaces/${subcommand}`, 'POST', { workspacePath: resolve(workspacePath ?? process.cwd()) });
 	if (outcome.kind === 'error') {
 		writeLine(context.stderr, outcome.message);
 		return outcome.statusCode === 401 || outcome.statusCode === 403 ? ExitCode.InvalidInvocation : ExitCode.Unavailable;

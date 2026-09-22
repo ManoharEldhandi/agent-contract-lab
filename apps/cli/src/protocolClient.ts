@@ -16,11 +16,11 @@ export type HealthOutcome =
 
 const LOOPBACK_HOSTS: ReadonlySet<string> = new Set(['127.0.0.1', 'localhost', '::1']);
 
-/** Parses a supervisor URL and rejects any non-loopback host. */
+/** Parses a supervisor URL and rejects anything except loopback HTTP. */
 export function assertLoopbackUrl(raw: string): URL {
 	const url = new URL(raw);
-	if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-		throw new Error(`supervisor URL must use http or https, received ${url.protocol}`);
+	if (url.protocol !== 'http:') {
+		throw new Error(`supervisor URL must use HTTP, received ${url.protocol}`);
 	}
 	const host = url.hostname.replace(/^\[(.+)\]$/, '$1');
 	if (!LOOPBACK_HOSTS.has(host)) {

@@ -38,6 +38,8 @@ export interface StartSessionOptions {
 	readonly workspacePath: string;
 	readonly actor: string;
 	readonly runMode?: Extract<RunMode, 'observe' | 'managed'>;
+	/** A user-visible task name. It is redacted by the supervisor before storage. */
+	readonly title?: string;
 }
 
 export interface ToolCall {
@@ -66,6 +68,13 @@ export interface FileActivity {
 	readonly correlationId?: string;
 }
 
+export interface FileReadActivity {
+	readonly path: string;
+	readonly tool?: string;
+	readonly pathType?: 'file' | 'directory';
+	readonly correlationId?: string;
+}
+
 export interface TestActivity {
 	readonly name: string;
 	readonly success: boolean;
@@ -90,6 +99,18 @@ interface EventResponse {
 	readonly event: SessionEvent;
 }
 
+interface EventsResponse {
+	readonly events: readonly SessionEvent[];
+	readonly cursor: { readonly afterSequence: number; readonly nextSequence: number };
+	readonly terminal: boolean;
+}
+
+export interface FollowEventsOptions {
+	readonly afterSequence?: number;
+	readonly pollIntervalMs?: number;
+	readonly signal?: AbortSignal;
+}
+
 export class SupervisorRequestError extends Error {
 	constructor(
 		readonly statusCode: number,
@@ -103,8 +124,8 @@ export class SupervisorRequestError extends Error {
 function assertLoopbackUrl(raw: string): URL {
 	const url = new URL(raw);
 	const host = url.hostname.replace(/^\[(.+)\]$/, '$1');
-	if ((url.protocol !== 'http:' && url.protocol !== 'https:') || !['127.0.0.1', 'localhost', '::1'].includes(host)) {
-		throw new Error('supervisorUrl must use http(s) on a loopback host');
+	if (url.protocol !== 'http:' || !['127.0.0.1', 'localhost', '::1'].includes(host)) {
+		throw new Error('supervisorUrl must use HTTP on a loopback host');
 	}
 	return url;
 }
@@ -147,6 +168,7 @@ export class LocalSupervisorClient {
 			workspacePath: options.workspacePath,
 			actor: options.actor,
 			runMode: options.runMode ?? 'observe',
+			...(options.title === undefined ? {} : { title: options.title }),
 		});
 		return new AgentContractSession(this, response.session, options.actor);
 	}
@@ -183,13 +205,24 @@ export class LocalSupervisorClient {
 		return response.session;
 	}
 
-	private async request<T>(pathname: string, method: string, body: JsonObject): Promise<T> {
+	async getEvents(sessionId: string, afterSequence = 0): Promise<EventsResponse> {
+		if (!Number.isInteger(afterSequence) || afterSequence < 0) {
+			throw new Error('afterSequence must be a non-negative integer');
+		}
+		const response = await this.request<EventsResponse>(`/v1/sessions/${encodeURIComponent(sessionId)}/events?afterSequence=${afterSequence}`, 'GET');
+		if (!Array.isArray(response.events) || typeof response.cursor?.nextSequence !== 'number' || typeof response.terminal !== 'boolean') {
+			throw new SupervisorRequestError(500, 'Supervisor returned malformed event data.');
+		}
+		return response;
+	}
+
+	private async request<T>(pathname: string, method: string, body?: JsonObject): Promise<T> {
 		let response: Response;
 		try {
 			response = await this.fetchImpl(new URL(pathname, this.baseUrl), {
 				method,
 				headers: { 'content-type': 'application/json', 'x-agent-contract-token': this.options.token },
-				body: JSON.stringify(body),
+				...(body === undefined ? {} : { body: JSON.stringify(body) }),
 				signal: AbortSignal.timeout(5_000),
 			});
 		} catch (error) {
@@ -217,8 +250,31 @@ export class AgentContractSession {
 		private readonly actor: string,
 	) {}
 
+	/** Compatibility shorthand for an AI-visible message. Prefer the role-specific methods below. */
 	message(text: string): Promise<SessionEvent> {
-		return this.client.emit(this.record.sessionId, this.actor, 'agent.message', { text });
+		return this.agentMessage(text);
+	}
+
+	userMessage(text: string): Promise<SessionEvent> {
+		return this.client.emit(this.record.sessionId, this.actor, 'agent.message', { role: 'user', text });
+	}
+
+	agentMessage(text: string): Promise<SessionEvent> {
+		return this.client.emit(this.record.sessionId, this.actor, 'agent.message', { role: 'assistant', text });
+	}
+
+	/** Retains only an explicit high-level plan, never private reasoning. */
+	plan(summary: string, steps?: readonly string[]): Promise<SessionEvent> {
+		return this.client.emit(this.record.sessionId, this.actor, 'agent.summary', {
+			summary,
+			source: 'plan',
+			...(steps === undefined ? {} : { steps: [...steps] }),
+		});
+	}
+
+	/** Retains a provider-visible reasoning summary when one is supplied. */
+	reasoningSummary(summary: string): Promise<SessionEvent> {
+		return this.client.emit(this.record.sessionId, this.actor, 'agent.summary', { summary, source: 'reasoning-summary' });
 	}
 
 	/** Stores a user-visible model declaration, never private chain-of-thought. */
@@ -263,6 +319,36 @@ export class AgentContractSession {
 		}, activity.correlationId);
 	}
 
+	fileRead(activity: FileReadActivity): Promise<SessionEvent> {
+		return this.client.emit(this.record.sessionId, this.actor, 'file.read', {
+			path: activity.path,
+			...(activity.tool === undefined ? {} : { tool: activity.tool }),
+			...(activity.pathType === undefined ? {} : { pathType: activity.pathType }),
+		}, activity.correlationId);
+	}
+
+	/**
+	 * Emits a correlated tool lifecycle around one real integration callback.
+	 * The callback result must be JSON-compatible to be retained; unsupported
+	 * values are represented as an evidence gap rather than stringified.
+	 */
+	async runTool<T>(activity: ToolCall, operation: () => Promise<T> | T): Promise<T> {
+		await this.toolCalled(activity);
+		try {
+			const result = await operation();
+			if (isJsonCompatible(result)) {
+				await this.toolCompleted({ tool: activity.tool, success: true, result, correlationId: activity.correlationId });
+			} else {
+				await this.toolCompleted({ tool: activity.tool, success: true, correlationId: activity.correlationId });
+				await this.unknown('tool.completed', 'not-retained', { tool: activity.tool, message: 'Tool result was not JSON-compatible and was not retained.' });
+			}
+			return result;
+		} catch (error) {
+			await this.toolCompleted({ tool: activity.tool, success: false, result: { message: error instanceof Error ? error.message : String(error) }, correlationId: activity.correlationId });
+			throw error;
+		}
+	}
+
 	testCompleted(activity: TestActivity): Promise<SessionEvent> {
 		return this.client.emit(this.record.sessionId, this.actor, 'test.completed', {
 			name: activity.name,
@@ -295,4 +381,73 @@ export class AgentContractSession {
 	unknown(kind: EventKind, reason: UnknownReason, payload: JsonObject = {}): Promise<SessionEvent> {
 		return this.client.emitUnknown(this.record.sessionId, this.actor, kind, reason, payload);
 	}
+
+	/** Follows supervisor-committed, already-redacted events for an application UI. */
+	async followEvents(callback: (event: SessionEvent) => void | Promise<void>, options: FollowEventsOptions = {}): Promise<void> {
+		let afterSequence = options.afterSequence ?? 0;
+		const pollIntervalMs = options.pollIntervalMs ?? 100;
+		if (!Number.isInteger(pollIntervalMs) || pollIntervalMs < 10) {
+			throw new Error('pollIntervalMs must be an integer of at least 10ms');
+		}
+		while (!options.signal?.aborted) {
+			const snapshot = await this.client.getEvents(this.record.sessionId, afterSequence);
+			for (const event of snapshot.events) {
+				if (event.sequence > afterSequence) {
+					await callback(event);
+					afterSequence = event.sequence;
+				}
+			}
+			if (snapshot.terminal) {
+				return;
+			}
+			await waitForNextPoll(pollIntervalMs, options.signal);
+		}
+	}
+}
+
+function isJsonCompatible(value: unknown): value is JsonValue {
+	if (value === null || typeof value === 'string' || typeof value === 'boolean') {
+		return true;
+	}
+	if (typeof value === 'number') {
+		return Number.isFinite(value);
+	}
+	if (Array.isArray(value)) {
+		return value.every(isJsonCompatible);
+	}
+	if (typeof value !== 'object' || value === null) {
+		return false;
+	}
+	return Object.values(value).every(isJsonCompatible);
+}
+
+function waitForNextPoll(milliseconds: number, signal?: AbortSignal): Promise<void> {
+	return new Promise((resolve) => {
+		if (signal?.aborted) {
+			resolve();
+			return;
+		}
+		const timeout = setTimeout(resolve, milliseconds);
+		signal?.addEventListener('abort', () => {
+			clearTimeout(timeout);
+			resolve();
+		}, { once: true });
+	});
+}
+
+/** Compact, safe text rendering for terminals and application-owned UIs. */
+export function formatSessionEventText(event: SessionEvent): readonly string[] {
+	const payload = event.payload as Record<string, JsonValue>;
+	const prefix = `[${event.sequence}] ${event.kind}`;
+	if (typeof payload.text === 'string' || typeof payload.summary === 'string') {
+		return [`${prefix}: ${typeof payload.text === 'string' ? payload.text : payload.summary as string}`];
+	}
+	if (typeof payload.executable === 'string') {
+		const args = Array.isArray(payload.args) ? payload.args.filter((value): value is string => typeof value === 'string').join(' ') : '';
+		return [`${prefix}: ${payload.executable}${args === '' ? '' : ` ${args}`}`];
+	}
+	if (typeof payload.path === 'string') {
+		return [`${prefix}: ${payload.path}`];
+	}
+	return [`${prefix}: ${JSON.stringify(payload)}`];
 }

@@ -6,6 +6,7 @@ import type { PolicyDecision, SessionEvent, TokenUsageSummary } from '@agent-con
 
 export interface SupervisorSession {
 	readonly sessionId: string;
+	readonly title?: string;
 	readonly state: string;
 	readonly runMode: string;
 	readonly actor: string;
@@ -85,6 +86,20 @@ export async function startManagedRun(baseUrl: URL, workspacePath: string, execu
 	});
 	if (result.session === undefined) {
 		throw new Error('The local supervisor returned malformed run data.');
+	}
+	return result.session;
+}
+
+export async function startCodexSession(baseUrl: URL, workspacePath: string, task: string, options: { readonly model?: string; readonly maxDurationMs?: number; readonly maxTokens?: number } = {}): Promise<SupervisorSession> {
+	const result = await request<{ session?: SupervisorSession }>(baseUrl, '/v1/codex-sessions', 'POST', {
+		workspacePath,
+		task,
+		...(options.model === undefined ? {} : { model: options.model }),
+		...(options.maxDurationMs === undefined ? {} : { maxDurationMs: options.maxDurationMs }),
+		...(options.maxTokens === undefined ? {} : { maxTokens: options.maxTokens }),
+	});
+	if (result.session === undefined) {
+		throw new Error('The local supervisor returned malformed Codex session data.');
 	}
 	return result.session;
 }

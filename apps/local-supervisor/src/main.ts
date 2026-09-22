@@ -13,9 +13,19 @@ function resolvePort(raw: string | undefined): number {
 	return parsed;
 }
 
+function resolveHost(raw: string | undefined): '127.0.0.1' | '::1' {
+	if (raw === undefined || raw.trim() === '') {
+		return '127.0.0.1';
+	}
+	if (raw === '127.0.0.1' || raw === '::1') {
+		return raw;
+	}
+	throw new Error(`invalid AGENT_CONTRACT_SUPERVISOR_HOST: ${raw}`);
+}
+
 async function main(): Promise<void> {
 	const port = resolvePort(process.env.AGENT_CONTRACT_SUPERVISOR_PORT);
-	const running = await startSupervisor({ version: SUPERVISOR_VERSION, port });
+	const running = await startSupervisor({ version: SUPERVISOR_VERSION, host: resolveHost(process.env.AGENT_CONTRACT_SUPERVISOR_HOST), port });
 	process.stderr.write(`agent-contract supervisor ${SUPERVISOR_VERSION} listening on ${running.url} (instance ${running.instanceId})\n`);
 
 	let closing = false;

@@ -1,7 +1,8 @@
 import * as vscode from 'vscode';
 import { discoverInstructionSources, formatInstructionSourceCount } from './instructionSources';
-import { evaluateContract, getEvidenceBundle, getSessionEventSnapshot, listSessions, parseCommandArray, startManagedRun, trustWorkspace, type SupervisorSession } from './supervisorApi';
-import { describeConnection, probeSupervisor, type SupervisorConnection } from './supervisorClient';
+import { evaluateContract, getEvidenceBundle, getSessionEventSnapshot, listSessions, parseCommandArray, startCodexSession, startManagedRun, trustWorkspace, type SupervisorSession } from './supervisorApi';
+import { describeConnection, type SupervisorConnection } from './supervisorClient';
+import { SupervisorRuntime } from './supervisorRuntime';
 
 class ContractLabView implements vscode.TreeDataProvider<vscode.TreeItem> {
 	private readonly changeEmitter = new vscode.EventEmitter<void>();
@@ -25,9 +26,10 @@ class ContractLabView implements vscode.TreeDataProvider<vscode.TreeItem> {
 					this.item(`Local supervisor: ${this.supervisorLabel}`, 'plug', 'agent-contract-lab.connectSupervisor', this.supervisorDetail),
 					this.item('Trust workspace for managed runs', 'shield', 'agent-contract-lab.trustWorkspace'),
 					this.item('Start monitored run', 'play', 'agent-contract-lab.startMonitoredRun'),
+					this.item('Log a Codex task', 'sparkle', 'agent-contract-lab.startCodexSession'),
 					this.item('Refresh recorded sessions', 'refresh', 'agent-contract-lab.refreshSessions'),
 					...this.sessions.map((session) => this.item(
-						`${session.sessionId.slice(0, 20)} (${session.state}, ${session.eventCount} events, ${formatTokenUsage(session)})`,
+						`${session.title ?? session.sessionId.slice(0, 20)} (${session.state}, ${session.eventCount} events, ${formatTokenUsage(session)})`,
 						'symbol-event',
 						'agent-contract-lab.openSessionLog',
 						`${session.runMode} run by ${session.actor}`,
@@ -85,6 +87,7 @@ export function activate(context: vscode.ExtensionContext): void {
 	const output = vscode.window.createOutputChannel('Agent Contract Lab');
 	const sessionView = new ContractLabView('session');
 	const instructionView = new ContractLabView('instructions');
+	const supervisorRuntime = new SupervisorRuntime({ extensionPath: context.extensionPath });
 
 	context.subscriptions.push(
 		output,
@@ -97,7 +100,7 @@ export function activate(context: vscode.ExtensionContext): void {
 				return;
 			}
 
-			const connection = await connectToSupervisor(output);
+			const connection = await connectToSupervisor(output, supervisorRuntime);
 			const { label, detail } = describeConnection(connection);
 			sessionView.setSupervisor(label, detail);
 			reportConnection(connection);
@@ -137,6 +140,7 @@ export function activate(context: vscode.ExtensionContext): void {
 				return;
 			}
 			try {
+				await ensureSupervisor(url, supervisorRuntime);
 				await trustWorkspace(url, workspacePath);
 				vscode.window.showInformationMessage('Workspace trusted for Agent Contract Lab managed runs.');
 			} catch (error) {
@@ -165,11 +169,42 @@ export function activate(context: vscode.ExtensionContext): void {
 				return;
 			}
 			try {
+				await ensureSupervisor(url, supervisorRuntime);
 				const session = await startManagedRun(url, workspacePath, command[0]!, command.slice(1));
 				vscode.window.showInformationMessage(`Started monitored session ${session.sessionId}.`);
 				await refreshSessions(sessionView, output);
 			} catch (error) {
 				vscode.window.showWarningMessage(`Could not start monitored run: ${error instanceof Error ? error.message : String(error)}`);
+			}
+		}),
+		vscode.commands.registerCommand('agent-contract-lab.startCodexSession', async () => {
+			if (!requireTrustedWorkspace()) {
+				return;
+			}
+			const workspacePath = activeWorkspacePath();
+			const url = configuredSupervisorUrl();
+			if (workspacePath === undefined || url === undefined) {
+				return;
+			}
+			const task = await vscode.window.showInputBox({
+				title: 'Log a Codex task',
+				prompt: 'The task is sent to a local Codex App Server and recorded as redacted native evidence.',
+				validateInput: (value) => value.trim() === '' ? 'Enter a task for Codex.' : undefined,
+			});
+			if (task === undefined || task.trim() === '') {
+				return;
+			}
+			try {
+				await ensureSupervisor(url, supervisorRuntime);
+				const configuration = vscode.workspace.getConfiguration('agent-contract-lab');
+				const session = await startCodexSession(url, workspacePath, task, {
+					maxDurationMs: configuration.get<number>('codex.defaultDurationMinutes', 30) * 60_000,
+					maxTokens: configuration.get<number>('codex.defaultTokenBudget', 50_000),
+				});
+				vscode.window.showInformationMessage(`Started supervised Codex session ${session.sessionId}.`);
+				await refreshSessions(sessionView, output);
+			} catch (error) {
+				vscode.window.showWarningMessage(`Could not start Codex: ${error instanceof Error ? error.message : String(error)}`);
 			}
 		}),
 		vscode.commands.registerCommand('agent-contract-lab.openSessionLog', async (sessionId: string) => {
@@ -280,15 +315,22 @@ function requireTrustedWorkspace(): boolean {
 	return false;
 }
 
-async function connectToSupervisor(output: vscode.OutputChannel): Promise<SupervisorConnection> {
+async function connectToSupervisor(output: vscode.OutputChannel, supervisorRuntime: SupervisorRuntime): Promise<SupervisorConnection> {
 	const url = configuredSupervisorUrl();
 	if (url === undefined) {
 		return { kind: 'unreachable', message: 'No valid loopback supervisor URL is configured.' };
 	}
 
-	const connection = await probeSupervisor(url);
+	const connection = await supervisorRuntime.ensureRunning(url);
 	output.appendLine(`Supervisor probe at ${url.origin}: ${connection.kind}`);
 	return connection;
+}
+
+async function ensureSupervisor(url: URL, supervisorRuntime: SupervisorRuntime): Promise<void> {
+	const connection = await supervisorRuntime.ensureRunning(url);
+	if (connection.kind !== 'connected') {
+		throw new Error(`Local supervisor is ${connection.kind}; use Connect Local Supervisor for details.`);
+	}
 }
 
 function configuredSupervisorUrl(): URL | undefined {
@@ -300,6 +342,10 @@ function configuredSupervisorUrl(): URL | undefined {
 	try {
 		const url = new URL(configuredUrl);
 		const host = url.hostname.replace(/^\[(.+)\]$/, '$1');
+		if (url.protocol !== 'http:') {
+			vscode.window.showWarningMessage(`Supervisor URL must use HTTP, received ${url.protocol}.`);
+			return undefined;
+		}
 		if (!['127.0.0.1', 'localhost', '::1'].includes(host)) {
 			vscode.window.showWarningMessage(`Supervisor URL must be loopback, received ${host}.`);
 			return undefined;

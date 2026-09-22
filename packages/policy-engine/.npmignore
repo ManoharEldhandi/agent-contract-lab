@@ -6,3 +6,4 @@
 !README.md
 !LICENSE
 dist/**/*.test.*
+dist/*.test.*

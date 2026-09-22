@@ -24,6 +24,7 @@ import {
 } from '@agent-contract-lab/event-schema';
 
 import { FileEvidenceLedger, workspaceReference, type EvidenceLedger } from './ledger';
+import { createCodexRelay, type CodexRelayControl, type CodexRelayFactory } from './codexRelay';
 import { createEvidenceBundle, verifyEvidenceBundle } from './evidenceBundle';
 import { calculateCostReport } from './pricing';
 import { acquireExclusiveStoreLock, createOrLoadAuthToken, readTrustedWorkspaces, tokensMatch, writeTrustedWorkspaces, type StoreLock, type TrustedWorkspace } from './state';
@@ -31,6 +32,10 @@ import { acquireExclusiveStoreLock, createOrLoadAuthToken, readTrustedWorkspaces
 const MAX_REQUEST_BYTES = 2 * 1024 * 1024;
 const MAX_CAPTURED_OUTPUT_CHARS = 64 * 1024;
 const MAX_GIT_DIFF_CHARS = 256 * 1024;
+const DEFAULT_CODEX_DURATION_MS = 30 * 60 * 1000;
+const MAX_CODEX_DURATION_MS = 4 * 60 * 60 * 1000;
+const DEFAULT_CODEX_TOKEN_BUDGET = 50_000;
+const MAX_CODEX_TOKEN_BUDGET = 2_000_000;
 
 export interface ApiRequest {
 	readonly method: string;
@@ -51,12 +56,15 @@ export interface SupervisorServiceOptions {
 	readonly instanceId?: string;
 	readonly now?: () => Date;
 	readonly ledger?: EvidenceLedger;
+	/** Injectable only for protocol tests; production uses the direct relay. */
+	readonly codexRelayFactory?: CodexRelayFactory;
 }
 
 interface CreateSessionBody {
 	readonly workspacePath: string;
 	readonly actor: string;
 	readonly runMode: RunMode;
+	readonly title?: string;
 }
 
 interface RunBody {
@@ -65,6 +73,14 @@ interface RunBody {
 	readonly args: string[];
 	readonly actor: string;
 	readonly isolated: boolean;
+}
+
+interface CodexSessionBody {
+	readonly workspacePath: string;
+	readonly task: string;
+	readonly model?: string;
+	readonly maxDurationMs: number;
+	readonly maxTokens: number;
 }
 
 interface TrustedWorkspaceResult {
@@ -123,6 +139,28 @@ function requiredString(body: Record<string, unknown>, key: string): string | un
 function optionalString(body: Record<string, unknown>, key: string): string | undefined {
 	const value = body[key];
 	return value === undefined || typeof value === 'string' ? value : undefined;
+}
+
+function optionalTitle(body: Record<string, unknown>, key: string): string | undefined {
+	const value = body[key];
+	if (value === undefined) {
+		return undefined;
+	}
+	if (typeof value !== 'string' || value.trim() === '') {
+		throw new Error(`${key} must be a non-empty string when provided`);
+	}
+	return value;
+}
+
+function optionalBoundedInteger(body: Record<string, unknown>, key: string, fallback: number, minimum: number, maximum: number): number {
+	const value = body[key];
+	if (value === undefined) {
+		return fallback;
+	}
+	if (typeof value !== 'number' || !Number.isInteger(value) || value < minimum || value > maximum) {
+		throw new Error(`${key} must be an integer between ${minimum} and ${maximum}`);
+	}
+	return value;
 }
 
 function stringArray(body: Record<string, unknown>, key: string): string[] | undefined {
@@ -309,14 +347,17 @@ export class SupervisorService {
 		private readonly ledger: EvidenceLedger,
 		private readonly now: () => Date,
 		private readonly storeLock: StoreLock,
+		private readonly codexRelayFactory: CodexRelayFactory,
 	) {}
+
+	private readonly codexRelays = new Map<string, CodexRelayControl>();
 
 	static async open(options: SupervisorServiceOptions): Promise<SupervisorService> {
 		const storeLock = await acquireExclusiveStoreLock(options.dataDirectory, options.instanceId ?? `sup_${randomUUID()}`);
 		try {
 			const token = await createOrLoadAuthToken(options.dataDirectory, options.authToken);
 			const ledger = options.ledger ?? await FileEvidenceLedger.open(options.dataDirectory, options.now);
-			return new SupervisorService(options.dataDirectory, token, ledger, options.now ?? (() => new Date()), storeLock);
+			return new SupervisorService(options.dataDirectory, token, ledger, options.now ?? (() => new Date()), storeLock, options.codexRelayFactory ?? createCodexRelay);
 		} catch (error) {
 			await storeLock.close();
 			throw error;
@@ -328,6 +369,7 @@ export class SupervisorService {
 	}
 
 	async close(): Promise<void> {
+		await Promise.all([...this.codexRelays.values()].map((relay) => relay.shutdown()));
 		await this.storeLock.close();
 	}
 
@@ -352,11 +394,14 @@ export class SupervisorService {
 			if (request.method === 'POST' && request.pathname === '/v1/runs') {
 				return this.startRun(request.body);
 			}
+			if (request.method === 'POST' && request.pathname === '/v1/codex-sessions') {
+				return this.startCodexSession(request.body);
+			}
 			if (request.method === 'POST' && request.pathname === '/v1/evidence-bundles/verify') {
 				return this.verifyEvidenceBundle(request.body);
 			}
 
-			const match = /^\/v1\/sessions\/([^/]+)(?:\/(events|usage|complete|cost|evidence-bundle|contracts\/evaluate))?$/.exec(request.pathname);
+			const match = /^\/v1\/sessions\/([^/]+)(?:\/(events|usage|complete|cancel|cost|evidence-bundle|contracts\/evaluate))?$/.exec(request.pathname);
 			if (match === null || match[1] === undefined) {
 				return errorBody('not_found', `unknown path ${request.pathname}`);
 			}
@@ -373,6 +418,9 @@ export class SupervisorService {
 			}
 			if (operation === 'complete' && request.method === 'POST') {
 				return this.completeSession(sessionId, request.body);
+			}
+			if (operation === 'cancel' && request.method === 'POST') {
+				return this.cancelSession(sessionId);
 			}
 			if (operation === 'cost' && request.method === 'GET') {
 				return this.getCost(sessionId);
@@ -427,7 +475,7 @@ export class SupervisorService {
 		if (parsed.isolated && worktree === undefined) {
 			throw new Error('could not create an isolated Git worktree; ensure the trusted workspace is a Git worktree with a committed HEAD');
 		}
-		const session = await this.ledger.createSession({ runMode: 'managed', actor: parsed.actor, workspacePath: workspace.workspacePath });
+		const session = await this.ledger.createSession({ runMode: 'managed', actor: parsed.actor, workspacePath: workspace.workspacePath, title: `Run ${[parsed.executable, ...parsed.args].join(' ')}` });
 		if (worktree !== undefined) {
 			await this.ledger.append(session.sessionId, {
 				kind: 'worktree.created', actor: 'supervisor', evidenceGrade: 'observed-boundary',
@@ -435,6 +483,27 @@ export class SupervisorService {
 			});
 		}
 		void this.execute(session.sessionId, worktree?.workspacePath ?? workspace.workspacePath, parsed, worktree).catch(() => undefined);
+		return ok({ schemaVersion: 1, session }, 202);
+	}
+
+	private async startCodexSession(body: unknown): Promise<ApiResult> {
+		const parsed = this.parseCodexSessionBody(body);
+		const workspace = await this.resolveTrustedWorkspace(parsed.workspacePath);
+		if (!workspace.trusted) {
+			return errorBody('workspace_not_trusted', `workspace ${workspace.label} is not trusted`);
+		}
+		const session = await this.ledger.createSession({ runMode: 'managed', actor: 'codex-app-server', workspacePath: workspace.workspacePath, title: parsed.task });
+		const relay = this.codexRelayFactory(
+			{
+				append: (draft) => this.ledger.append(session.sessionId, draft),
+				recordUsage: (usage) => this.ledger.recordUsage(session.sessionId, usage, { actor: 'codex-app-server', evidenceGrade: 'observed-native' }),
+				complete: (state) => this.completeWithUsageGap(session.sessionId, state),
+			},
+			{ ...parsed, sessionId: session.sessionId, workspacePath: workspace.workspacePath },
+			(sessionId) => { this.codexRelays.delete(sessionId); },
+		);
+		this.codexRelays.set(session.sessionId, relay);
+		void relay.start().catch(() => undefined);
 		return ok({ schemaVersion: 1, session }, 202);
 	}
 
@@ -557,6 +626,22 @@ export class SupervisorService {
 		return ok({ schemaVersion: 1, session });
 	}
 
+	private async cancelSession(sessionId: string): Promise<ApiResult> {
+		const session = await this.ledger.getSession(sessionId);
+		if (session === undefined) {
+			return errorBody('not_found', `unknown session ${sessionId}`);
+		}
+		if (session.state !== 'running') {
+			return ok({ schemaVersion: 1, session });
+		}
+		const relay = this.codexRelays.get(sessionId);
+		if (relay === undefined) {
+			throw new Error('this session is not owned by a cancellable agent relay');
+		}
+		await relay.cancel('user-request');
+		return ok({ schemaVersion: 1, session: (await this.ledger.getSession(sessionId))! }, 202);
+	}
+
 	private async evaluateContract(sessionId: string, body: unknown): Promise<ApiResult> {
 		if ((await this.ledger.getSession(sessionId)) === undefined) {
 			return errorBody('not_found', `unknown session ${sessionId}`);
@@ -591,7 +676,8 @@ export class SupervisorService {
 		if (session === undefined) {
 			throw new Error(`unknown session ${sessionId}`);
 		}
-		if (session.tokenUsage.status === 'unknown') {
+		const usageWasAlreadyExplained = (await this.ledger.listEvents(sessionId)).some((event) => event.kind === 'usage.unavailable');
+		if (session.tokenUsage.status === 'unknown' && !usageWasAlreadyExplained) {
 			await this.ledger.recordUsageUnknown(sessionId, 'unsupported-capability');
 		}
 		return this.ledger.complete(sessionId, state);
@@ -733,10 +819,11 @@ export class SupervisorService {
 		const workspacePath = requiredString(value, 'workspacePath');
 		const actor = requiredString(value, 'actor');
 		const runMode = value.runMode;
+		const title = optionalTitle(value, 'title');
 		if (workspacePath === undefined || actor === undefined || !isRunMode(runMode)) {
 			throw new Error('session requires workspacePath, actor, and a canonical runMode');
 		}
-		return { workspacePath, actor, runMode };
+		return { workspacePath, actor, runMode, ...(title === undefined ? {} : { title }) };
 	}
 
 	private parseRunBody(body: unknown): RunBody {
@@ -753,5 +840,25 @@ export class SupervisorService {
 			throw new Error('run requires workspacePath, executable, an optional string args array, and an optional boolean isolated flag');
 		}
 		return { workspacePath, executable, args, actor, isolated };
+	}
+
+	private parseCodexSessionBody(body: unknown): CodexSessionBody {
+		const value = asRecord(body);
+		if (value === undefined) {
+			throw new Error('Codex session body must be an object');
+		}
+		const workspacePath = requiredString(value, 'workspacePath');
+		const task = requiredString(value, 'task');
+		const model = optionalString(value, 'model');
+		if (workspacePath === undefined || task === undefined || task.length > 32_000 || (value.model !== undefined && model === undefined)) {
+			throw new Error('Codex session requires workspacePath, a task up to 32000 characters, and an optional model');
+		}
+		return {
+			workspacePath,
+			task,
+			...(model === undefined ? {} : { model }),
+			maxDurationMs: optionalBoundedInteger(value, 'maxDurationMs', DEFAULT_CODEX_DURATION_MS, 1_000, MAX_CODEX_DURATION_MS),
+			maxTokens: optionalBoundedInteger(value, 'maxTokens', DEFAULT_CODEX_TOKEN_BUDGET, 1, MAX_CODEX_TOKEN_BUDGET),
+		};
 	}
 }

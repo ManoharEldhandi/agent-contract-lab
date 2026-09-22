@@ -129,6 +129,12 @@ test('supervisor status ok returns Ok and emits JSON result', async () => {
 	assert.equal(parsed.result.status, 'ok');
 });
 
+test('supervisor start reuses an already healthy local supervisor', async () => {
+	const result = await run(['supervisor', 'start'], jsonFetch(validHealthBody()));
+	assert.equal(result.code, ExitCode.Ok);
+	assert.match(result.stdout, /already running/);
+});
+
 test('supervisor status unreachable returns Unavailable', async () => {
 	const result = await run(['supervisor', 'status'], unreachableFetch);
 	assert.equal(result.code, ExitCode.Unavailable);
@@ -180,6 +186,33 @@ test('run sends an explicit executable, argument vector, and isolation mode to t
 		workspacePath: process.cwd(), executable: 'node', args: ['-e', 'process.exit(0)'], actor: 'test-agent', isolated: true,
 	});
 	assert.equal((JSON.parse(result.stdout) as { command: string }).command, 'run');
+});
+
+test('agent codex starts a directly supervised agent task with explicit limits', async () => {
+	let requestBody: unknown;
+	const apiFetch: FetchLike = async (input, init) => {
+		assert.equal(new URL(input).pathname, '/v1/codex-sessions');
+		requestBody = JSON.parse(init?.body ?? '{}');
+		return new Response(JSON.stringify({ schemaVersion: 1, session: validSession({ state: 'running', actor: 'codex-app-server', title: 'Fix the parser' }) }), { status: 202 });
+	};
+	const result = await run(['agent', 'codex', 'Fix', 'the', 'parser', '--model', 'gpt-5.6-terra', '--max-duration-ms', '60000', '--max-tokens', '1000', '--format', 'json'], apiFetch, { AGENT_CONTRACT_TOKEN: 'test-token' });
+	assert.equal(result.code, ExitCode.Ok);
+	assert.deepEqual(requestBody, {
+		workspacePath: process.cwd(), task: 'Fix the parser', model: 'gpt-5.6-terra', maxDurationMs: 60_000, maxTokens: 1_000,
+	});
+	assert.equal((JSON.parse(result.stdout) as { command: string }).command, 'agent codex');
+});
+
+test('workspace trust resolves a relative caller path before sending it to the supervisor', async () => {
+	let requestBody: unknown;
+	const apiFetch: FetchLike = async (input, init) => {
+		assert.equal(new URL(input).pathname, '/v1/workspaces/trust');
+		requestBody = JSON.parse(init?.body ?? '{}');
+		return new Response(JSON.stringify({ schemaVersion: 1, workspace: { label: 'workspace', fingerprint: 'abc' }, trusted: true }), { status: 200 });
+	};
+	const result = await run(['workspace', 'trust', '.', '--format', 'json'], apiFetch, { AGENT_CONTRACT_TOKEN: 'test-token' });
+	assert.equal(result.code, ExitCode.Ok);
+	assert.deepEqual(requestBody, { workspacePath: process.cwd() });
 });
 
 test('logs renders a readable timeline and one canonical event per JSONL line', async () => {

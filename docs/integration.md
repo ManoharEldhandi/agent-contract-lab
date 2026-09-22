@@ -1,37 +1,58 @@
 # Integration
 
-Run the local supervisor and trust a workspace once before attaching an AI integration:
+Start the packaged local supervisor and trust a workspace once before attaching an AI integration:
 
 ```sh
-agent-contract-supervisor
+agent-contract supervisor start
 agent-contract workspace trust .
 ```
 
-Install `@agent-contract-lab/adapter-sdk` alongside the code that invokes the model. The SDK reads `AGENT_CONTRACT_SUPERVISOR_URL`, `AGENT_CONTRACT_HOME`, and `AGENT_CONTRACT_TOKEN` from the local environment. It accepts only loopback HTTP(S) supervisor URLs, so the local token never belongs in source code.
+Install `@agent-contract-lab/adapter-sdk` alongside the code that invokes the model. The SDK reads `AGENT_CONTRACT_SUPERVISOR_URL`, `AGENT_CONTRACT_HOME`, and `AGENT_CONTRACT_TOKEN` from the local environment. It accepts only loopback HTTP supervisor URLs, so the local token never belongs in source code.
 
 ## Record An AI Run
 
-Create one session for the agent run and report observable activity as it occurs. `summary()` is only for a user-visible summary, never hidden reasoning or chain-of-thought.
+Create one session for the agent run and report observable activity as it occurs. Plans and reasoning summaries must be provider-visible, high-level text; never submit hidden reasoning or chain-of-thought.
 
 ```ts
+import { readFile } from 'node:fs/promises';
 import { LocalSupervisorClient } from '@agent-contract-lab/adapter-sdk';
 
 const client = await LocalSupervisorClient.fromLocalEnvironment();
 const session = await client.startSession({
   workspacePath: process.cwd(),
   actor: 'my-ai-adapter',
+  title: 'Fix the failing parser test',
 });
 
-await session.message('I will inspect the test failure.');
-await session.summary('Read the failing test and selected a targeted repair.');
-await session.toolCalled({ tool: 'read_file', arguments: { path: 'src/app.ts' } });
-await session.toolCompleted({ tool: 'read_file', success: true });
+await session.userMessage('Fix the test failure.');
+await session.plan('Read the failing test and make the smallest repair.', ['Read src/app.ts', 'Run the focused test']);
+await session.reasoningSummary('The assertion likely expects an outdated value.');
+await session.runTool({ tool: 'read_file', arguments: { path: 'src/app.ts' } }, () => readFile('src/app.ts', 'utf8'));
+await session.fileRead({ path: 'src/app.ts', tool: 'read_file' });
 await session.commandStarted({ executable: 'npm', args: ['test'] });
 await session.commandCompleted({ executable: 'npm', args: ['test'], exitCode: 0 });
 await session.fileChanged({ path: 'src/app.ts', operation: 'modified' });
 await session.testCompleted({ name: 'npm test', success: true, durationMs: 842 });
 await session.complete();
 ```
+
+`followEvents()` provides the same already-redacted committed timeline to an orchestrator, terminal dashboard, desktop client, or authenticated application backend. Do not expose the local supervisor token to browser code.
+
+```ts
+void session.followEvents((event) => {
+  appClients.broadcast({ type: 'agent-contract-event', event });
+});
+```
+
+## Direct Codex Runs
+
+For a supervisor-owned Codex App Server session, use the CLI or VS Code **Log a Codex Task** action:
+
+```sh
+agent-contract agent codex "Fix the failing parser test" --model gpt-5.6-terra --max-duration-ms 1800000 --max-tokens 50000
+```
+
+This is the direct integration path: documented visible messages, plans, reasoning summaries, commands, output, file changes, and usage updates are retained as `observed-native`. Private raw reasoning is never stored. A contract can be evaluated against the completed session exactly as it can against a managed command or SDK session.
 
 ## Token Usage
 

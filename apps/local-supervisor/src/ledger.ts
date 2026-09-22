@@ -25,6 +25,7 @@ export interface CreateSessionInput {
 	readonly runMode: RunMode;
 	readonly actor: string;
 	readonly workspacePath: string;
+	readonly title?: string;
 }
 
 export interface EventDraft {
@@ -42,7 +43,7 @@ export interface EvidenceLedger {
 	createSession(input: CreateSessionInput): Promise<SessionRecord>;
 	append(sessionId: string, draft: EventDraft): Promise<SessionEvent>;
 	complete(sessionId: string, state: Extract<SessionState, 'completed' | 'failed' | 'interrupted'>): Promise<SessionRecord>;
-	recordUsage(sessionId: string, usage: TokenUsage): Promise<SessionRecord>;
+	recordUsage(sessionId: string, usage: TokenUsage, provenance?: { readonly actor: string; readonly evidenceGrade: Extract<EvidenceGrade, 'observed-native' | 'model-declared'> }): Promise<SessionRecord>;
 	recordUsageUnknown(sessionId: string, reason: UnknownReason): Promise<SessionRecord>;
 	getSession(sessionId: string): Promise<SessionRecord | undefined>;
 	listSessions(): Promise<readonly SessionRecord[]>;
@@ -185,9 +186,11 @@ export class FileEvidenceLedger implements EvidenceLedger {
 	async createSession(input: CreateSessionInput): Promise<SessionRecord> {
 		const createdAt = this.now().toISOString();
 		const sessionId = `ses_${randomUUID()}`;
+		const redactedTitle = input.title === undefined ? undefined : redactJson(input.title).value;
 		const session: SessionRecord = {
 			schemaVersion: SCHEMA_VERSION,
 			sessionId,
+			...(typeof redactedTitle === 'string' && redactedTitle.trim() !== '' ? { title: redactedTitle } : {}),
 			runMode: input.runMode,
 			state: 'running',
 			actor: input.actor,
@@ -204,7 +207,7 @@ export class FileEvidenceLedger implements EvidenceLedger {
 			kind: 'session.started',
 			actor: 'supervisor',
 			evidenceGrade: 'computed',
-			payload: { runMode: input.runMode, actor: input.actor },
+			payload: { runMode: input.runMode, actor: input.actor, ...(typeof redactedTitle === 'string' ? { title: redactedTitle } : {}) },
 		});
 		return this.requireSession(sessionId);
 	}
@@ -253,7 +256,7 @@ export class FileEvidenceLedger implements EvidenceLedger {
 	}
 
 	async complete(sessionId: string, state: Extract<SessionState, 'completed' | 'failed' | 'interrupted'>): Promise<SessionRecord> {
-		const kind = state === 'completed' ? 'session.completed' : 'session.failed';
+		const kind = state === 'completed' ? 'session.completed' : state === 'interrupted' ? 'session.interrupted' : 'session.failed';
 		await this.append(sessionId, {
 			kind,
 			actor: 'supervisor',
@@ -269,15 +272,15 @@ export class FileEvidenceLedger implements EvidenceLedger {
 		return this.requireSession(sessionId);
 	}
 
-	async recordUsage(sessionId: string, usage: TokenUsage): Promise<SessionRecord> {
+	async recordUsage(sessionId: string, usage: TokenUsage, provenance: { readonly actor: string; readonly evidenceGrade: Extract<EvidenceGrade, 'observed-native' | 'model-declared'> } = { actor: 'integration', evidenceGrade: 'model-declared' }): Promise<SessionRecord> {
 		const normalized = normalizeUsage(usage);
 		if (normalized === undefined) {
 			throw new Error('token usage must contain non-negative integer counts and totalTokens');
 		}
 		await this.append(sessionId, {
 			kind: 'usage.reported',
-			actor: 'integration',
-			evidenceGrade: 'model-declared',
+			actor: provenance.actor,
+			evidenceGrade: provenance.evidenceGrade,
 			payload: usagePayload(normalized),
 		});
 		await this.enqueue(async () => {

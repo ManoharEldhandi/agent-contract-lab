@@ -1,4 +1,5 @@
 const esbuild = require("esbuild");
+const path = require("node:path");
 
 const production = process.argv.includes('--production');
 const watch = process.argv.includes('--watch');
@@ -25,17 +26,24 @@ const esbuildProblemMatcherPlugin = {
 
 async function main() {
 	const ctx = await esbuild.context({
-		entryPoints: [
-			'src/extension.ts'
-		],
+		entryPoints: {
+			extension: 'src/extension.ts',
+			supervisor: '../local-supervisor/src/main.ts',
+		},
 		bundle: true,
 		format: 'cjs',
 		minify: production,
 		sourcemap: !production,
 		sourcesContent: false,
 		platform: 'node',
-		outfile: 'dist/extension.js',
+		outdir: 'dist',
+		entryNames: '[name]',
 		external: ['vscode'],
+		alias: {
+			'@agent-contract-lab/event-schema': path.resolve(__dirname, '../../packages/event-schema/src/index.ts'),
+			'@agent-contract-lab/adapter-sdk': path.resolve(__dirname, '../../packages/adapter-sdk/src/index.ts'),
+			'@agent-contract-lab/policy-engine': path.resolve(__dirname, '../../packages/policy-engine/src/index.ts'),
+		},
 		logLevel: 'silent',
 		plugins: [
 			/* add to the end of plugins array */

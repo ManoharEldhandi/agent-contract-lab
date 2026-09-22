@@ -6,6 +6,7 @@ import type { HealthResponse } from '@agent-contract-lab/event-schema';
 import { buildHealthResponse, createIdentity } from './health';
 import { route } from './router';
 import { SupervisorService } from './service';
+import type { CodexRelayFactory } from './codexRelay';
 import { defaultDataDirectory } from './state';
 import { SUPERVISOR_VERSION } from './version';
 
@@ -21,6 +22,8 @@ export interface StartOptions {
 	readonly dataDirectory?: string;
 	/** Test-only override. Production tokens are created in the local data directory. */
 	readonly authToken?: string;
+	/** Test-only direct-agent relay override. */
+	readonly codexRelayFactory?: CodexRelayFactory;
 }
 
 export interface RunningSupervisor {
@@ -115,6 +118,7 @@ export async function startSupervisor(options: StartOptions = {}): Promise<Runni
 		authToken: options.authToken,
 		instanceId: identity.instanceId,
 		now: options.now,
+		codexRelayFactory: options.codexRelayFactory,
 	});
 	const server: Server = createServer(createRequestListener(health, service));
 

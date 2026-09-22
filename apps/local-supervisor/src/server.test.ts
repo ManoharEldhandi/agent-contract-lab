@@ -9,6 +9,7 @@ import { after, test } from 'node:test';
 import { parseHealthResponse } from '@agent-contract-lab/event-schema';
 
 import { startSupervisor, type RunningSupervisor } from './server';
+import type { CodexRelayFactory } from './codexRelay';
 
 const running: RunningSupervisor[] = [];
 const temporaryDirectories: string[] = [];
@@ -20,9 +21,9 @@ async function temporaryDirectory(prefix: string): Promise<string> {
 	return directory;
 }
 
-async function start(): Promise<RunningSupervisor> {
+async function start(codexRelayFactory?: CodexRelayFactory): Promise<RunningSupervisor> {
 	const supervisor = await startSupervisor({
-		version: '0.1.0', host: '127.0.0.1', port: 0, dataDirectory: await temporaryDirectory('agent-contract-supervisor-'), authToken: 'test-token',
+		version: '0.1.0', host: '127.0.0.1', port: 0, dataDirectory: await temporaryDirectory('agent-contract-supervisor-'), authToken: 'test-token', codexRelayFactory,
 	});
 	running.push(supervisor);
 	return supervisor;
@@ -125,6 +126,43 @@ test('requires authentication and explicit trust before a managed command can ru
 	assert.equal(trusted.status, 200);
 	const beforeRun = await api(supervisor, '/v1/sessions');
 	assert.deepEqual((await beforeRun.json() as { sessions: unknown[] }).sessions, []);
+});
+
+test('starts a trusted Codex relay as native evidence with a redacted task title', async () => {
+	let receivedTask: string | undefined;
+	const supervisor = await start((sink, options, onFinished) => ({
+		start: async () => {
+			receivedTask = options.task;
+			await sink.append({ kind: 'agent.message', actor: 'codex-app-server', evidenceGrade: 'observed-native', payload: { role: 'assistant', text: 'I will inspect the test.' } });
+			await sink.append({ kind: 'command.started', actor: 'codex-app-server', evidenceGrade: 'observed-native', payload: { executable: 'npm test' }, correlationId: 'cmd_1' });
+			await sink.append({ kind: 'command.completed', actor: 'codex-app-server', evidenceGrade: 'observed-native', payload: { executable: 'npm test', succeeded: true }, correlationId: 'cmd_1' });
+			await sink.recordUsage({ source: 'provider-reported', provider: 'openai', model: 'gpt-5.6-terra', inputTokens: 8, outputTokens: 3, totalTokens: 11 });
+			await sink.complete('completed');
+			onFinished(options.sessionId);
+		},
+		cancel: async () => undefined,
+		shutdown: async () => undefined,
+	}));
+	const workspacePath = await temporaryDirectory('agent-contract-codex-workspace-');
+	assert.equal((await api(supervisor, '/v1/workspaces/trust', 'POST', { workspacePath })).status, 200);
+	const started = await api(supervisor, '/v1/codex-sessions', 'POST', {
+		workspacePath, task: 'Fix apiKey=super-secret-value test', model: 'gpt-5.6-terra', maxDurationMs: 1_000, maxTokens: 200,
+	});
+	assert.equal(started.status, 202);
+	const session = (await started.json() as { session: { sessionId: string; title?: string } }).session;
+	assert.equal(receivedTask, 'Fix apiKey=super-secret-value test');
+	assert.equal(session.title?.includes('super-secret-value'), false);
+	const terminal = await waitForTerminalSession(supervisor, session.sessionId);
+	assert.equal(terminal.state, 'completed');
+	const events = (await (await api(supervisor, `/v1/sessions/${session.sessionId}/events`)).json() as { events: { kind: string; evidenceGrade: string; payload: Record<string, unknown> }[] }).events;
+	assert.deepEqual(events.map((event) => event.kind), ['session.started', 'agent.message', 'command.started', 'command.completed', 'usage.reported', 'session.completed']);
+	assert.ok(events.slice(1, 5).every((event) => event.evidenceGrade === 'observed-native'));
+	assert.equal(JSON.stringify(events).includes('super-secret-value'), false);
+	const evaluated = await api(supervisor, `/v1/sessions/${session.sessionId}/contracts/evaluate`, 'POST', {
+		contractYaml: 'version: 1\nname: codex-command\nassertions:\n  commands:\n    requireSuccess:\n      - "npm test"\n',
+	});
+	assert.equal(evaluated.status, 200);
+	assert.deepEqual((await evaluated.json() as { decisions: { result: string }[] }).decisions.map((decision) => decision.result), ['pass']);
 });
 
 test('captures a trusted process as redacted canonical evidence and records the usage gap', async () => {

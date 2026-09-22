@@ -4,6 +4,14 @@
   "private": true,
   "description": "Local-first evidence and contract testing for AI coding agents",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ManoharEldhandi/agent-contract-lab.git"
+  },
+  "homepage": "https://github.com/ManoharEldhandi/agent-contract-lab#readme",
+  "bugs": {
+    "url": "https://github.com/ManoharEldhandi/agent-contract-lab/issues"
+  },
   "engines": {
     "node": ">=22"
   },
@@ -20,8 +28,13 @@
     "test:workspaces": "npm run test --workspaces --if-present",
     "supervisor": "node apps/local-supervisor/dist/main.js",
     "cli": "node apps/cli/dist/bin.js",
+    "extension:install": "npm --prefix apps/vscode-extension ci",
+    "extension:package": "npm --prefix apps/vscode-extension run vsix",
+    "extension:test": "npm --prefix apps/vscode-extension test",
+    "release:versions": "node scripts/check-release-versions.mjs",
+    "release:check": "npm run release:versions && npm run test && npm run pack:check && npm run extension:install && npm run extension:package",
     "package:extension": "npm --prefix apps/vscode-extension run vsix",
-    "pack:check": "npm run build && npm pack --dry-run --workspace @agent-contract-lab/event-schema && npm pack --dry-run --workspace @agent-contract-lab/policy-engine && npm pack --dry-run --workspace @agent-contract-lab/local-supervisor && npm pack --dry-run --workspace @agent-contract-lab/cli && npm pack --dry-run --workspace @agent-contract-lab/adapter-sdk"
+    "pack:check": "npm run build && node scripts/check-package-contents.mjs"
   },
   "devDependencies": {
     "@types/node": "24.x",

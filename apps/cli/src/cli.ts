@@ -1,4 +1,5 @@
 import { contractCommand } from './commands/contract';
+import { codexCommand } from './commands/agent';
 import { costCommand } from './commands/cost';
 import { exportEvidenceBundleCommand, verifyEvidenceBundleCommand } from './commands/evidenceBundle';
 import { doctorCommand } from './commands/doctor';
@@ -6,6 +7,7 @@ import { logsCommand } from './commands/logs';
 import { runCommand } from './commands/run';
 import { sessionsCommand } from './commands/sessions';
 import { supervisorStatusCommand } from './commands/supervisorStatus';
+import { supervisorStartCommand } from './commands/supervisorStart';
 import { watchCommand } from './commands/watch';
 import { workspaceCommand } from './commands/workspace';
 import { optionFlag, optionString, parseArgs } from './args';
@@ -29,10 +31,12 @@ Usage:
 
 Commands:
   doctor                 Check the CLI installation and supervisor reachability
-  supervisor status      Show the local supervisor health and capabilities
+	supervisor status      Show the local supervisor health and capabilities
+	supervisor start       Start or reuse the packaged local supervisor
 	workspace trust [path] Explicitly trust a workspace for managed execution
 	workspace status [path] Show whether a workspace is trusted
 	run -- <command>       Run a trusted command with boundary evidence capture
+	agent codex <task>     Run a directly supervised Codex task with native evidence
 	watch <session-id>     Follow committed events with resumable filters
 	cost <session-id>      Calculate cost from a versioned price table
 	export <session-id>    Write a portable redacted evidence bundle
@@ -46,6 +50,9 @@ Options:
 	--format <pretty|json|jsonl> Output format (default: pretty on a TTY, else json)
 	--actor <name>         Label a managed command run
 	--isolated             Run the command in a supervisor-managed Git worktree
+	--model <name>         Model for a direct Codex task when the adapter supports it
+	--max-duration-ms <n>  Time limit for a direct Codex task
+	--max-tokens <n>       Reported-token limit for a direct Codex task
 	--output <file>        Evidence bundle destination for export
 	--after-sequence <n>   Resume watch after a committed event sequence
 	--kind <names>         Comma-separated event kinds for watch
@@ -103,16 +110,29 @@ export async function runCli(environment: CliEnvironment): Promise<number> {
 			return doctorCommand(context, { requireSupervisor: optionFlag(options, 'require-supervisor') });
 		case 'supervisor': {
 			const sub = positionals[1];
+			if (sub === 'start') {
+				return supervisorStartCommand(context);
+			}
 			if (sub === 'status') {
 				return supervisorStatusCommand(context);
 			}
-			writeLine(environment.stderr, sub === undefined ? 'Usage: agent-contract supervisor status' : `Unknown supervisor subcommand: ${sub}`);
+			writeLine(environment.stderr, sub === undefined ? 'Usage: agent-contract supervisor <start|status>' : `Unknown supervisor subcommand: ${sub}`);
 			return ExitCode.InvalidInvocation;
 		}
 		case 'workspace':
 			return workspaceCommand(context, positionals[1], positionals[2]);
 		case 'run':
 			return runCommand(context, positionals.slice(1), optionString(options, 'actor'), optionFlag(options, 'isolated'));
+		case 'agent':
+			if (positionals[1] === 'codex') {
+				return codexCommand(context, positionals.slice(2), {
+					model: optionString(options, 'model'),
+					maxDurationMs: optionString(options, 'max-duration-ms'),
+					maxTokens: optionString(options, 'max-tokens'),
+				});
+			}
+			writeLine(environment.stderr, 'Usage: agent-contract agent codex <task>');
+			return ExitCode.InvalidInvocation;
 		case 'watch':
 			return watchCommand(context, positionals[1], {
 				afterSequence: optionString(options, 'after-sequence'),

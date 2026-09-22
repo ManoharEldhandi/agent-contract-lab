@@ -29,7 +29,8 @@ test('assertLoopbackUrl accepts loopback hosts', () => {
 test('assertLoopbackUrl rejects remote hosts and non-http protocols', () => {
 	assert.throws(() => assertLoopbackUrl('http://example.com'), /loopback/);
 	assert.throws(() => assertLoopbackUrl('http://0.0.0.0'), /loopback/);
-	assert.throws(() => assertLoopbackUrl('ftp://127.0.0.1'), /http/);
+	assert.throws(() => assertLoopbackUrl('ftp://127.0.0.1'), /HTTP/);
+	assert.throws(() => assertLoopbackUrl('https://127.0.0.1'), /HTTP/);
 });
 
 test('fetchHealth returns ok for a valid response', async () => {

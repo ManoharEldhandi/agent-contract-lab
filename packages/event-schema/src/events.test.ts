@@ -62,7 +62,10 @@ test('token usage sources distinguish provider totals from adapter declarations'
 test('includes canonical event kinds for adapter lifecycle and instruction loading', () => {
 	assert.equal(isEventKind('adapter.lifecycle'), true);
 	assert.equal(isEventKind('instruction.loaded'), true);
+	assert.equal(isEventKind('file.read'), true);
+	assert.equal(isEventKind('workspace.changed'), true);
 	assert.equal(isEventKind('workspace.diff'), true);
 	assert.equal(isEventKind('worktree.created'), true);
 	assert.equal(isEventKind('worktree.removed'), true);
+	assert.equal(isEventKind('session.interrupted'), true);
 });

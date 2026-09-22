@@ -20,6 +20,7 @@
     "test": "node --enable-source-maps --test \"dist/**/*.test.js\""
   },
   "dependencies": {
+    "@agent-contract-lab/local-supervisor": "^0.1.0",
     "@agent-contract-lab/event-schema": "^0.1.0"
   }
 }
