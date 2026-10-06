@@ -37,7 +37,7 @@
     "pack:check": "npm run build && node scripts/check-package-contents.mjs"
   },
   "devDependencies": {
-    "@types/node": "24.x",
+    "@types/node": "26.x",
     "typescript": "^6.0.3"
   }
 }
