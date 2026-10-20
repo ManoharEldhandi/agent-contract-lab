@@ -7,6 +7,7 @@ const manifestPaths = [
 	'packages/policy-engine/package.json',
 	'packages/adapter-sdk/package.json',
 	'apps/local-supervisor/package.json',
+	'apps/policy-console/package.json',
 	'apps/cli/package.json',
 	'apps/vscode-extension/package.json',
 ];

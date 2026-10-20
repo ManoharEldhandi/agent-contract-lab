@@ -48,6 +48,7 @@ async function request<T>(baseUrl: URL, pathname: string, method = 'GET', body?:
 	try {
 		response = await fetch(new URL(pathname, baseUrl), {
 			method,
+			redirect: 'error',
 			headers: { 'content-type': 'application/json', 'x-agent-contract-token': token },
 			...(body === undefined ? {} : { body: JSON.stringify(body) }),
 			signal: AbortSignal.timeout(5_000),
@@ -80,10 +81,21 @@ export async function trustWorkspace(baseUrl: URL, workspacePath: string): Promi
 	await request(baseUrl, '/v1/workspaces/trust', 'POST', { workspacePath });
 }
 
-export async function startManagedRun(baseUrl: URL, workspacePath: string, executable: string, args: readonly string[]): Promise<SupervisorSession> {
-	const result = await request<{ session?: SupervisorSession }>(baseUrl, '/v1/runs', 'POST', {
-		workspacePath, executable, args, actor: 'vscode-managed-command',
+export interface ManagedRunOptions {
+	readonly contractYaml?: string;
+	readonly isolated?: boolean;
+}
+
+export function managedRunBody(workspacePath: string, executable: string, args: readonly string[], options: ManagedRunOptions = {}) {
+	return Object.freeze({
+		workspacePath, executable, args: Object.freeze([...args]), actor: 'vscode-managed-command',
+		...(options.contractYaml === undefined ? {} : { contractYaml: options.contractYaml }),
+		...(options.isolated === undefined ? {} : { isolated: options.isolated }),
 	});
+}
+
+export async function startManagedRun(baseUrl: URL, workspacePath: string, executable: string, args: readonly string[], options: ManagedRunOptions = {}): Promise<SupervisorSession> {
+	const result = await request<{ session?: SupervisorSession }>(baseUrl, '/v1/runs', 'POST', managedRunBody(workspacePath, executable, args, options));
 	if (result.session === undefined) {
 		throw new Error('The local supervisor returned malformed run data.');
 	}

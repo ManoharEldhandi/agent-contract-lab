@@ -1,0 +1,44 @@
+version: 1
+name: staged-source-repair
+assertions:
+  paths:
+    allow: ["src/**"]
+    deny: ["src/private/**"]
+  commands:
+    allow: ["node --test src/**"]
+    deny: ["rm *"]
+    requireSuccess: ["node --test src/**"]
+    requirePreAction: true
+  evidence:
+    require: [command-result, filesystem-diff]
+runtime:
+  phases:
+    - name: inspect
+      tools: [file.read, knowledge.search]
+      requireSuccessfulTools: [file.read]
+    - name: edit
+      tools: [file.read, file.write, model.call, knowledge.search]
+    - name: verify
+      tools: [command, file.read, model.call, knowledge.search]
+      next: [edit]
+  limits:
+    maxDurationMs: 180000
+    maxActionDurationMs: 5000
+    maxTokens: 20000
+    maxRetries: 1
+    maxActions: 24
+    maxConsecutiveFailures: 3
+    maxChangedFiles: 1
+    maxWriteBytes: 8192
+    maxOutputBytes: 8192
+    maxActionsPerWindow: 20
+    windowMs: 60000
+  toolQuotas:
+    file.read: 6
+    file.write: 2
+    command: 4
+    model.call: 2
+    knowledge.search: 8
+  requireReadBeforeWrite: true
+  requireVerificationBeforeComplete: true
+  allowedModels: [review-model]

@@ -13,12 +13,13 @@
     "url": "https://github.com/ManoharEldhandi/agent-contract-lab/issues"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.13.0"
   },
   "workspaces": [
     "packages/*",
     "apps/cli",
-    "apps/local-supervisor"
+    "apps/local-supervisor",
+    "apps/policy-console"
   ],
   "scripts": {
     "build": "tsc -b",
@@ -28,16 +29,23 @@
     "test:workspaces": "npm run test --workspaces --if-present",
     "supervisor": "node apps/local-supervisor/dist/main.js",
     "cli": "node apps/cli/dist/bin.js",
+    "demo": "npm run build && node examples/contract-demo.mjs",
+    "demo:web": "npm run build && npm start --workspace @agent-contract-lab/policy-console",
+    "console:check": "node --check apps/policy-console/server.mjs && node --check apps/policy-console/public/app.js && prettier --check --use-tabs --single-quote \"apps/policy-console/**/*.{mjs,js,css,html}\"",
     "extension:install": "npm --prefix apps/vscode-extension ci",
     "extension:package": "npm --prefix apps/vscode-extension run vsix",
     "extension:test": "npm --prefix apps/vscode-extension test",
     "release:versions": "node scripts/check-release-versions.mjs",
-    "release:check": "npm run release:versions && npm run test && npm run pack:check && npm run extension:install && npm run extension:package",
+    "release:check": "npm run release:versions && npm run console:check && npm run test && npm run demo && npm run pack:check && npm run extension:install && npm run extension:package",
     "package:extension": "npm --prefix apps/vscode-extension run vsix",
     "pack:check": "npm run build && node scripts/check-package-contents.mjs"
   },
   "devDependencies": {
     "@types/node": "24.x",
+    "model-worklog-schema": "2.1.0",
+    "model-worklog-sdk": "2.1.0",
+    "model-worklog-supervisor": "2.1.0",
+    "prettier": "3.9.10",
     "typescript": "^6.0.3"
   }
 }

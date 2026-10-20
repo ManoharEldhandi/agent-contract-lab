@@ -1,10 +1,36 @@
 # Agent Contract Lab
 
-Local, evidence-first observability and contract testing for AI coding agents. It records visible agent activity, commands, tool calls, reviewed files, edits, tests, and provider usage without retaining private chain-of-thought. The same redacted timeline is the input to deterministic policy and contract evaluation.
+Local, evidence-first observability, supervised execution, and contract testing for AI coding agents. It records visible agent activity, commands, tool calls, reviewed files, edits, tests, and provider usage without retaining private chain-of-thought. The same redacted timeline is the input to deterministic policy and contract evaluation.
+
+## End-to-End Demo
+
+For the usable policy console:
+
+```sh
+npm ci
+npm run demo:web
+```
+
+Open the printed loopback URL, normally `http://127.0.0.1:43280`. The console
+includes stage-specific tools, time/token/retry budgets, ten additional runtime
+restrictions, live evidence, policy editing, and cited local knowledge search.
+Use the fixture agent without credentials or configure an OpenAI-compatible
+provider for a real model-generated repair. See [Stateful Policies](docs/runtime-policies.md).
+
+Requires Node.js 22.13 or later and Git. No model account, API key, global CLI installation, or existing collector is required:
+
+```sh
+npm ci
+npm run demo
+```
+
+The demo creates an isolated inventory fixture, refuses an out-of-scope write and a forbidden command, observes a real failing test, applies a scripted repair through supervisor-owned tools, and observes passing tests. It verifies eight contract assertions, the unchanged source checkout, bundle integrity, and tamper detection. The actual Model Logger SDK and collector 2.1.0 record seven correlated metadata-only spans, including blocked and failed action outcomes.
+
+Redacted JSON reports, evidence, and traces are written beneath `.agent-contract-demo/`. Temporary worktrees, collectors, and scoped credentials are removed. The repair is explicitly scripted, not presented as a model response. Use `npm run demo -- --output <directory>` to select another artifact directory.
 
 ## Quick Start
 
-Requires Node.js 22 or later.
+Source development requires Node.js 22.13 or later.
 
 From a published release:
 
@@ -18,7 +44,7 @@ For source development:
 
 ```sh
 # In this repository
-npm install
+npm ci
 npm run build
 npm link
 
@@ -38,6 +64,28 @@ agent-contract contract evaluate <session-id> /path/to/agent-contract-lab/exampl
 
 The supervisor listens only on loopback. Its local token, trust registry, and redacted JSONL evidence live under `~/.agent-contract-lab` by default; set `AGENT_CONTRACT_HOME` to use another local directory.
 
+## Contract Enforcement
+
+There are two explicit enforcement scopes:
+
+- `agent-contract run --contract ./contract.yaml --wait -- <command>` checks the managed command before launch, waits for completion, and evaluates retained evidence for CI. Exit codes are `0` for pass, `2` for failure, and `3` for unknown evidence. A launch check does not intercept an agent's internal tools or child processes.
+- `client.startContractSession(...)` attaches an immutable contract and defaults to an isolated Git worktree. `session.executeAction(...)` submits commands, reads, and writes to supervisor-owned tools. A refusal never invokes the executor; a failed evidence commit also prevents execution. Decisions precede effects and reference the exact contract hash.
+
+Command allow/deny rules and path allow/deny rules are deterministic. Command output, file sizes, deadlines, and action queues are bounded. Final path checks also inspect supervisor-owned Git snapshots, so an allowed command's observed file changes are not ignored. Ambiguous dirty baselines and incomplete snapshots remain unknown.
+
+The [integration guide](docs/integration.md) includes provider-neutral tool integration and the optional Model Logger strategy. The [contract specification](docs/policy-and-contract-spec.md) describes supported fields and limitations.
+
+Stateful policies belong on supervisor-owned contract sessions, not the generic
+launch guard. `runtime.phases` controls tool access by stage; `runtime.limits`
+controls duration, token admission, retries, actions, rate, failures, file breadth,
+write volume, and output. Read-before-write, model allowlists, per-tool quotas,
+and current-revision verification are also enforced. The policy console exposes
+all fourteen control groups and preserves active-policy immutability.
+
+Local SQLite retrieval supplies cited policy/runbook context for optional model
+calls and operator explanations. Retrieved text never makes the allow/deny
+decision, and operator searches do not consume agent quotas.
+
 ## Logs
 
 `logs` has three formats:
@@ -50,7 +98,7 @@ agent-contract logs <session-id> --format jsonl
 
 Every event has a supervisor sequence, timestamp, actor, canonical kind, evidence grade, redaction metadata, and JSON payload. JSONL emits exactly one event per line. Pretty logs label token totals as provider-reported, deterministically computed from documented provider fields, adapter-reported, or mixed. OpenAI Responses and compatible Chat Completions, Anthropic Messages, and Gemini GenerateContent responses can be submitted directly through the SDK; other providers use an explicit field mapping. A generic managed command has no access to a model response or billing counters, so its token usage correctly remains reason-coded `unknown`.
 
-Managed commands are captured as `observed-boundary` evidence. A direct `agent-contract agent codex <task>` run uses the documented Codex App Server stream and records visible agent activity as `observed-native`; raw reasoning is intentionally represented as redacted rather than retained. Other AI systems can use the local SDK to report messages, safe summaries, tools, commands, files, tests, and token usage as `model-declared` evidence. See [Integration](docs/integration.md). YAML contracts deterministically evaluate retained command and file events. Missing evidence and requested pre-action interception remain reason-coded `unknown`, never a guessed pass or prevention claim.
+Managed commands and supervisor-owned contract actions are captured as `observed-boundary` evidence. A direct `agent-contract agent codex <task>` run uses the documented Codex App Server stream and records visible agent activity as `observed-native`; raw reasoning is intentionally represented as redacted rather than retained. Other AI systems can use the local SDK to report messages, safe summaries, tools, commands, files, tests, and token usage as `model-declared` evidence. See [Integration](docs/integration.md). YAML contracts evaluate retained command, file, and Git snapshot evidence. Pre-action assertions pass only with hash-bound, correlated supervisor proofs for the supported scope; unsupported interception remains reason-coded `unknown`.
 
 ## Live Monitoring
 
@@ -92,7 +140,7 @@ The bundle includes the redacted session, canonical event stream, policy-decisio
 
 ## VS Code
 
-Build the extension with `cd apps/vscode-extension && npm install && npm run compile`. Run the `Run Extension` launch configuration. **Connect Local Supervisor** starts the bundled loopback-only supervisor if one is not already running. In the **Agent Contracts** view, trust the workspace, start a monitored command or **Log a Codex Task**, then select a session to inspect its redacted event log. The **Export Evidence Bundle** command selects a retained session and saves the supervisor-generated JSON through VS Code's native Save dialog.
+Build the extension with `cd apps/vscode-extension && npm ci && npm run compile`. Run the `Run Extension` launch configuration. **Connect Local Supervisor** starts the bundled loopback-only supervisor if one is not already running. In the **Agent Contracts** view, trust the workspace, start a monitored command or **Log a Codex Task**, then select a session to inspect its redacted event log. **Guard Command Launch** selects a contract and runs a checked command in an isolated worktree; the Policies and Contracts views show the real final decisions. **Export Evidence Bundle** saves the supervisor-generated JSON through VS Code's native Save dialog. Instruction Sources lists discovered candidates, not proof that a particular vendor loaded them.
 
 ## Publish
 
@@ -106,6 +154,7 @@ artifact contents, and the VSIX. The package dependency order is
 
 - Redaction happens before evidence is written or returned. Common credentials and sensitive structured fields are replaced; deployment should add organization-specific rules for its secret formats.
 - No client can submit `observed-native`, `observed-boundary`, or `computed` facts through the external API.
-- Repository instructions, contracts, and model output are untrusted input. The current policy engine evaluates retained evidence only; adapter interception, OS-level sandboxing, and broader contract assertions remain later milestones.
+- Repository instructions, contracts, and model output are untrusted input. Unknown contract fields are rejected rather than silently ignored. An integration must route actual tools through supervisor actions to gain pre-action enforcement; observation callbacks and Model Logger spans do not grant it.
+- Worktrees and path checks are not an OS sandbox. Allowed commands can create child processes, use the network, or access files outside the worktree. Native vendor interception, organization-policy precedence, vendor-specific effective-instruction resolution, and broader assertions remain explicit roadmap items.
 
 Architecture and security decisions are in [docs](docs/).

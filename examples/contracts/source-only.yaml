@@ -1,0 +1,20 @@
+version: 1
+name: source-only
+assertions:
+  paths:
+    allow:
+      - "src/**"
+    deny:
+      - "src/private/**"
+  commands:
+    allow:
+      - "node --test src/**"
+    deny:
+      - "rm *"
+    requireSuccess:
+      - "node --test src/**"
+    requirePreAction: true
+  evidence:
+    require:
+      - command-result
+      - filesystem-diff

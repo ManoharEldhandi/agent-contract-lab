@@ -50,6 +50,8 @@ Options:
 	--format <pretty|json|jsonl> Output format (default: pretty on a TTY, else json)
 	--actor <name>         Label a managed command run
 	--isolated             Run the command in a supervisor-managed Git worktree
+	--contract <file>      Apply a YAML contract before the managed command launch
+	--wait                 Wait for completion and evaluate an attached contract
 	--model <name>         Model for a direct Codex task when the adapter supports it
 	--max-duration-ms <n>  Time limit for a direct Codex task
 	--max-tokens <n>       Reported-token limit for a direct Codex task
@@ -122,8 +124,16 @@ export async function runCli(environment: CliEnvironment): Promise<number> {
 		case 'workspace':
 			return workspaceCommand(context, positionals[1], positionals[2]);
 		case 'run':
-			return runCommand(context, positionals.slice(1), optionString(options, 'actor'), optionFlag(options, 'isolated'));
+			if (options.contract !== undefined && optionString(options, 'contract') === undefined) {
+				writeLine(environment.stderr, '--contract requires a YAML file path.');
+				return ExitCode.InvalidInvocation;
+			}
+			return runCommand(context, positionals.slice(1), optionString(options, 'actor'), optionFlag(options, 'isolated'), { contractPath: optionString(options, 'contract'), wait: optionFlag(options, 'wait') });
 		case 'agent':
+			if (options.contract !== undefined) {
+				writeLine(environment.stderr, 'Native agent logging does not enforce attached contracts. Use supervised contract sessions or the policy console.');
+				return ExitCode.InvalidInvocation;
+			}
 			if (positionals[1] === 'codex') {
 				return codexCommand(context, positionals.slice(2), {
 					model: optionString(options, 'model'),

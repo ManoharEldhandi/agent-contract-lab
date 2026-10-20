@@ -4,17 +4,21 @@
 
 Policies are deterministic, human-owned guardrails. Contracts are executable behavioral expectations evaluated against an isolated agent task. Retrieval and language models can explain both, but never decide enforcement.
 
-## v0 declarative shape
+## Implemented V1 Contract
 
-Repository contracts live under `.agent-contract-lab/contracts/*.yaml`. Organization policy is stored outside the repository and has higher precedence.
+Contracts may be selected from repository YAML files. They contain only the
+supported fields below; unknown fields, oversized patterns, and malformed input
+are rejected. Task fixtures are driver inputs, not policy fields.
+
+The optional `runtime` section adds phase-aware tools, duration/token/retry
+budgets, quotas, file/output limits, model allowlists, and completion gates.
+See [Stateful Policies](runtime-policies.md) and the
+[complete staged example](../examples/contracts/staged-agent.yaml). These fields
+require supervisor-owned contract sessions; launch-only guards reject them.
 
 ```yaml
 version: 1
 name: no-production-config-edits
-fixture:
-  task: "Add a retry to the local client."
-  targetPaths:
-    - "packages/client/**"
 assertions:
   paths:
     allow:
@@ -23,26 +27,53 @@ assertions:
     deny:
       - "infra/production/**"
   commands:
+    allow:
+      - "node --test tests/client/**"
     requireSuccess:
-      - "npm run test:client"
+      - "node --test tests/client/**"
     deny:
-      - "rm -rf *"
+      - "rm *"
+    requirePreAction: true
   evidence:
     require:
       - "filesystem-diff"
       - "command-result"
 ```
 
-## Rule classes
+## Implemented Rules
 
-- Path rules: allowed, denied, required touched/untouched paths.
-- Command rules: required success, forbidden patterns, approval requirements.
-- Tool/MCP rules: allowed/denied tool kinds and destinations where native evidence exists.
-- Test rules: mandatory scripts, expected artifacts, time limits.
-- Instruction rules: expected effective files or precedence only when the adapter has sufficient provenance.
-- Export rules: forbid upload/export of defined sensitive artifact classes.
+- `paths.allow` and `paths.deny`: gate supervisor-owned file reads/writes and
+  evaluate observed changes, including complete supervisor Git snapshots.
+- `commands.allow` and `commands.deny`: gate structured executable/argument
+  vectors and evaluate observed launches. Deny takes precedence. An omitted allow
+  list imposes no allow-list restriction; an empty allow list refuses all commands.
+- `commands.requireSuccess`: require a correlated successful observed completion.
+  An explicit retained failure is `fail`; missing results remain `unknown`.
+- `commands.requirePreAction`: require a supervisor-attached contract hash and
+  prior correlated computed decisions for every observed supervisor command.
+  Generic launch guards and vendor observation alone cannot satisfy it.
+- `evidence.require`: supports `command-result` and `filesystem-diff` only.
 
-## Precedence
+Patterns use minimatch. File paths are normalized relative paths; absolute paths,
+traversal, symlinked file access, and hardlinked targets are refused. Command
+patterns match the executable and arguments joined with spaces, with wildcards
+able to span path separators. Deny patterns also check executable basenames;
+allow patterns check the complete executable text. Prefer exact trusted executable
+paths and narrow arguments. These globs do not parse shell syntax or constrain
+arbitrary effects of an approved program.
+
+Contracts are immutable snapshots. Pre-action decisions bind the canonical
+contract SHA-256 and the proposed action correlation ID before the executor runs.
+Failure to retain that decision prevents execution. Post-action rule decisions
+retain evidence IDs and preserve unknowns for missing or ambiguous observations.
+Git-ignored files, transient writes, and effects outside the worktree are not
+covered by a final Git snapshot.
+
+## Planned Rule Sources
+
+The current implementation attaches one user-selected contract. Organization
+policy loading and multi-source precedence are not implemented. The target
+precedence remains:
 
 ```text
 Built-in safety invariants
@@ -52,7 +83,10 @@ Built-in safety invariants
   > task-specific fixture input
 ```
 
-No lower layer may disable a higher-layer requirement. The report records the origin and hash of every effective rule.
+Future lower layers must not disable a higher-layer requirement. Required-touch
+assertions, approval workflows, MCP destination rules, vendor instruction-load
+rules, and export policies also remain unsupported and must not be inferred from
+natural-language instruction files.
 
 ## Deterministic evaluation
 

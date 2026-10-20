@@ -24,6 +24,7 @@
     "@agent-contract-lab/adapter-sdk": "^0.1.0",
     "@agent-contract-lab/event-schema": "^0.1.0",
     "@agent-contract-lab/policy-engine": "^0.1.0",
+    "minisearch": "7.2.0",
     "yaml": "^2.8.2"
   }
 }

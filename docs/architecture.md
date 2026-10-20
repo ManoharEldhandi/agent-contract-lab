@@ -54,6 +54,39 @@ Recommended initial runtime: TypeScript/Node.js to share types and reduce startu
 
 The current release persists redacted session JSON and append-only event JSONL under a user-local directory. It provides authenticated loopback event queries, diff capture, versioned cost reports, detached Git-worktree execution, and portable evidence bundles. SQLite, content-addressed artifact storage, native local sockets, and OS sandboxing remain target architecture rather than current implementation.
 
+### Supervised Execution Layers
+
+- Domain: the policy engine parses immutable contracts and computes deterministic
+    action decisions and retained-evidence verdicts without performing tool I/O.
+- Application: `ContractExecution` serializes proposals, commits the correlated
+    policy decision, and invokes an injected executor only after authorization.
+    Policy, executor, and evidence ports are separate interfaces.
+- Infrastructure: `WorkspaceActionExecutor` owns bounded file/process I/O; the
+    ledger owns redacted immutable retained records; the service owns authenticated
+    transport, trust, worktrees, and lifecycle composition.
+- Integration: the SDK requests supervisor-owned actions. Its optional Model
+    Logger strategy wraps that request at most once and cannot change the policy
+    result, replay an effect, or promote telemetry to an observed evidence grade.
+
+The local supervisor has no Model Logger runtime dependency. The pinned external
+SDK and collector are development/demo dependencies only. See
+[ADR 0007](adr/0007-supervisor-owned-contract-actions.md) for execution boundaries.
+
+Stateful runtime transitions are pure immutable reducers in the policy package.
+The application interceptor serializes authorization, admission charges, effects,
+usage settlement, phase changes, and completion gates. A composite executor
+delegates to bounded workspace I/O, a pluggable local full-text knowledge index, or a
+server-configured model provider. The provider is an injected interface; no
+endpoint or credential is accepted from an agent/browser action.
+
+Retrieval uses native SQLite FTS5 where supported and MiniSearch otherwise.
+SQLite is loaded lazily so an editor/runtime without that optional native
+capability does not break the existing supervisor or policy path.
+
+The private policy-console application is a loopback HTTP client of that same
+supervisor. Its operator retrieval is read-only and separate from agent quotas.
+Retrieved context is never an input that can weaken deterministic authorization.
+
 ### Adapters
 
 Each adapter translates vendor behavior into a canonical event schema and declares precise capabilities. Adapters cannot invent evidence. Unsupported data is `unknown`, not inferred.

@@ -1,0 +1,363 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>Agent Contract Lab | Policy Console</title>
+		<link rel="stylesheet" href="/style.css" />
+		<script src="/assets/icons.js" defer></script>
+		<script src="/app.js" type="module"></script>
+	</head>
+	<body>
+		<div class="app-shell">
+			<aside class="sidebar">
+				<a class="brand" href="/" aria-label="Agent Contract Lab"
+					><span class="brand-mark"><i data-lucide="shield-check"></i></span
+					><span>Agent Contract <strong>Lab</strong></span></a
+				>
+				<div class="sidebar-label">LOCAL WORKSPACE</div>
+				<div class="workspace-name">
+					<i data-lucide="folder-git-2"></i><span>Depot Inventory</span
+					><span class="local-dot"></span>
+				</div>
+				<nav aria-label="Console views">
+					<button
+						class="nav-item active"
+						data-view="session"
+						aria-current="page"
+					>
+						<i data-lucide="activity"></i>Session
+					</button>
+					<button class="nav-item" data-view="policy">
+						<i data-lucide="sliders-horizontal"></i>Policy
+					</button>
+					<button class="nav-item" data-view="knowledge">
+						<i data-lucide="book-open-text"></i>Knowledge
+					</button>
+				</nav>
+				<div class="sidebar-bottom">
+					<span class="local-dot" id="connection-dot"></span
+					><span id="connection-label">Connecting</span
+					><span class="version">v0.1</span>
+				</div>
+			</aside>
+			<main>
+				<header class="page-header">
+					<div>
+						<div class="eyebrow">POLICY CONSOLE</div>
+						<h1>Inventory repair</h1>
+						<div class="workspace-meta">
+							<i data-lucide="git-branch"></i>Detached worktree<span
+								class="meta-separator"
+								>/</span
+							><span id="session-short">New session</span>
+						</div>
+					</div>
+					<div class="header-status">
+						<span class="status-pill" id="session-status">Connecting</span
+						><button
+							class="icon-button"
+							id="export-button"
+							title="Export evidence bundle"
+							aria-label="Export evidence bundle"
+						>
+							<i data-lucide="download"></i>
+						</button>
+					</div>
+				</header>
+				<div class="run-toolbar">
+					<div class="mode-control" role="group" aria-label="Agent mode">
+						<button data-mode="fixture" class="selected">
+							<i data-lucide="workflow"></i>Fixture agent</button
+						><button data-mode="model" id="model-mode" title="Connected model">
+							<i data-lucide="sparkles"></i>Connected model
+						</button>
+					</div>
+					<div class="toolbar-actions">
+						<button
+							class="icon-button"
+							id="reset-button"
+							title="New isolated session"
+							aria-label="New isolated session"
+						>
+							<i data-lucide="rotate-ccw"></i></button
+						><button class="button secondary" id="stop-button" disabled>
+							<i data-lucide="square"></i>Stop</button
+						><button class="button primary" id="run-button">
+							<i data-lucide="play"></i>Run repair
+						</button>
+					</div>
+				</div>
+				<div class="run-error" id="run-error" role="alert" hidden></div>
+				<section class="workflow-section" aria-label="Workflow stages">
+					<ol class="workflow" id="workflow"></ol>
+					<span class="policy-name" id="active-policy">Loading policy</span>
+				</section>
+				<section class="metrics" aria-label="Runtime budgets">
+					<div class="metric">
+						<span>Actions</span>
+						<div id="metric-actions">0 <small>/ 24</small></div>
+						<progress
+							id="progress-actions"
+							max="24"
+							value="0"
+							aria-label="Action budget"
+						></progress>
+					</div>
+					<div class="metric">
+						<span>Token admission</span>
+						<div id="metric-tokens">0 <small>/ 20k</small></div>
+						<progress
+							id="progress-tokens"
+							max="20000"
+							value="0"
+							aria-label="Token admission budget"
+						></progress
+						><span class="metric-note" id="reported-tokens"
+							>Provider usage: not reported</span
+						>
+					</div>
+					<div class="metric">
+						<span>Failed attempts</span>
+						<div id="metric-retries">0</div>
+						<span class="metric-note" id="retry-limit"
+							>1 retry / request / revision</span
+						>
+					</div>
+					<div class="metric">
+						<span>Files touched</span>
+						<div id="metric-files">0 <small>/ 1</small></div>
+						<progress
+							id="progress-files"
+							max="1"
+							value="0"
+							aria-label="Changed file budget"
+						></progress>
+					</div>
+					<div class="metric">
+						<span>Session time</span>
+						<div id="metric-time">00:00 <small>/ 03:00</small></div>
+						<progress
+							id="progress-time"
+							max="180000"
+							value="0"
+							aria-label="Session duration"
+						></progress>
+					</div>
+				</section>
+
+				<div id="view-session" class="view active-view">
+					<div class="session-layout">
+						<div class="session-main">
+							<section class="timeline-section">
+								<div class="section-heading">
+									<h2>Decision timeline</h2>
+									<div class="timeline-counts" id="timeline-counts">
+										0 actions
+									</div>
+								</div>
+								<div class="table-scroll">
+									<table class="timeline-table">
+										<thead>
+											<tr>
+												<th>Time</th>
+												<th>Action</th>
+												<th>Result</th>
+												<th class="rule-column">Policy</th>
+											</tr>
+										</thead>
+										<tbody id="timeline-body"></tbody>
+									</table>
+								</div>
+								<div class="empty-state" id="timeline-empty">
+									<i data-lucide="list-checks"></i><span>No actions yet</span>
+								</div>
+							</section>
+							<section class="action-section">
+								<div class="section-heading">
+									<h2>Action console</h2>
+									<div class="inline-actions">
+										<button class="text-button" id="advance-button">
+											<i data-lucide="arrow-right"></i>Advance stage</button
+										><button class="text-button" id="complete-button">
+											<i data-lucide="check-check"></i>Complete
+										</button>
+									</div>
+								</div>
+								<form id="action-form">
+									<div class="action-input-row">
+										<label
+											>Tool<select id="action-kind">
+												<option value="file.read">file.read</option>
+												<option value="file.write">file.write</option>
+												<option value="command">command</option>
+												<option value="knowledge.search">
+													knowledge.search
+												</option>
+												<option value="model.call">model.call</option>
+											</select></label
+										><label class="action-target-label"
+											>Target<input
+												id="action-target"
+												value="src/inventory.cjs"
+												autocomplete="off"
+												spellcheck="false" /></label
+										><button
+											class="button secondary"
+											id="attempt-button"
+											type="submit"
+										>
+											<i data-lucide="send"></i>Attempt
+										</button>
+									</div>
+									<label id="action-content-label" hidden
+										>Content<textarea
+											id="action-content"
+											rows="4"
+											spellcheck="false"
+										>
+module.exports = { inventoryValue: () => 0 };</textarea>
+									</label>
+									<label id="action-args-label" hidden
+										>Arguments (JSON)<input
+											id="action-args"
+											value='["--test","src/inventory.test.cjs"]'
+											spellcheck="false"
+									/></label>
+									<label id="action-prompt-label" hidden
+										>Prompt<textarea id="action-prompt" rows="3">
+Explain the current file and verification restrictions.</textarea>
+									</label>
+									<p
+										class="action-result"
+										id="action-result"
+										aria-live="polite"
+									></p>
+								</form>
+							</section>
+							<section class="diff-section">
+								<div class="section-heading">
+									<h2>Workspace diff</h2>
+									<span class="quiet" id="diff-status"
+										>Pending final snapshot</span
+									>
+								</div>
+								<pre id="workspace-diff">No final diff retained.</pre>
+							</section>
+						</div>
+						<aside class="session-detail">
+							<section class="tool-section">
+								<div class="section-heading">
+									<h2>Stage permissions</h2>
+									<span class="stage-badge" id="current-stage">inspect</span>
+								</div>
+								<div id="tool-permissions"></div>
+							</section>
+							<section class="evidence-section">
+								<div class="section-heading"><h2>Decision evidence</h2></div>
+								<div id="selected-action" class="quiet">No action selected</div>
+								<pre id="decision-detail">{}</pre>
+								<div class="evidence-reference" id="evidence-reference"></div>
+							</section>
+							<section class="session-facts">
+								<h2>Execution boundary</h2>
+								<dl>
+									<div>
+										<dt>Policy</dt>
+										<dd>Deterministic</dd>
+									</div>
+									<div>
+										<dt>Source checkout</dt>
+										<dd>Isolated</dd>
+									</div>
+									<div>
+										<dt>Tool effects</dt>
+										<dd>Supervisor-owned</dd>
+									</div>
+									<div>
+										<dt>Retrieval authority</dt>
+										<dd>Reference only</dd>
+									</div>
+									<div>
+										<dt>OS sandbox</dt>
+										<dd>Not enabled</dd>
+									</div>
+								</dl>
+							</section>
+						</aside>
+					</div>
+				</div>
+
+				<div id="view-policy" class="view" hidden>
+					<div class="section-heading policy-toolbar">
+						<div>
+							<h2>Agent policy</h2>
+							<span class="quiet" id="policy-save-state"
+								>Applies to next session</span
+							>
+						</div>
+						<div class="inline-actions">
+							<label class="preset-label"
+								>Preset<select id="policy-preset">
+									<option value="balanced">Balanced repair</option>
+									<option value="review">Review only</option>
+									<option value="tight">Tight action budget</option>
+								</select></label
+							><button class="button secondary" id="validate-button">
+								<i data-lucide="list-checks"></i>Validate</button
+							><button class="button primary" id="save-policy-button">
+								<i data-lucide="save"></i>Save policy
+							</button>
+						</div>
+					</div>
+					<div class="policy-layout">
+						<label class="policy-editor-label"
+							>Contract YAML<textarea
+								id="policy-editor"
+								spellcheck="false"
+								aria-label="Contract YAML"
+							></textarea>
+						</label>
+						<section class="controls-section">
+							<h2>Active controls</h2>
+							<div id="control-catalog"></div>
+						</section>
+					</div>
+				</div>
+
+				<div id="view-knowledge" class="view" hidden>
+					<div class="section-heading">
+						<div>
+							<h2>Policy knowledge</h2>
+							<span class="quiet" id="knowledge-policy"
+								>Active contract and local runbooks</span
+							>
+						</div>
+						<span class="engine-label" id="knowledge-engine"
+							><i data-lucide="database"></i>Local full-text</span
+						>
+					</div>
+					<form class="knowledge-form" id="knowledge-form">
+						<label for="knowledge-query">Question</label>
+						<div>
+							<input
+								id="knowledge-query"
+								value="Why are writes blocked during inspection?"
+								maxlength="512"
+							/><button class="button primary" type="submit" id="search-button">
+								<i data-lucide="search"></i>Search
+							</button>
+						</div>
+					</form>
+					<div class="knowledge-stats" id="knowledge-stats">No query yet</div>
+					<div id="knowledge-results" aria-live="polite"></div>
+				</div>
+				<footer class="page-footer">
+					<span id="footer-session">Local execution</span
+					><span id="footer-evidence">Evidence retained locally</span>
+				</footer>
+			</main>
+		</div>
+		<div class="toast" id="toast" role="status" hidden></div>
+	</body>
+</html>

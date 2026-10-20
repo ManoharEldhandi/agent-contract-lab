@@ -1,9 +1,18 @@
 import { readFile } from 'node:fs/promises';
 
+import type { PolicyDecision } from '@agent-contract-lab/event-schema';
+
 import { ExitCode } from '../constants';
 import type { CommandContext } from '../context';
 import { writeJson, writeJsonLine, writeLine } from '../output';
 import { requestSupervisor, type ContractEvaluationResult } from '../supervisorApi';
+
+export function contractExitCode(decisions: readonly PolicyDecision[]): ExitCode {
+	if (decisions.some((decision) => decision.result === 'fail')) {
+		return ExitCode.FindingFailed;
+	}
+	return decisions.length === 0 || decisions.some((decision) => decision.result === 'unknown') ? ExitCode.Unknown : ExitCode.Ok;
+}
 
 export async function contractCommand(context: CommandContext, subcommand: string | undefined, sessionId: string | undefined, contractPath: string | undefined): Promise<ExitCode> {
 	if (subcommand !== 'evaluate' || sessionId === undefined || contractPath === undefined) {
@@ -26,7 +35,7 @@ export async function contractCommand(context: CommandContext, subcommand: strin
 		for (const decision of outcome.data.decisions) {
 			writeJsonLine(context.stdout, decision);
 		}
-		return outcome.data.decisions.some((decision) => decision.result === 'fail') ? ExitCode.FindingFailed : outcome.data.decisions.some((decision) => decision.result === 'unknown') ? ExitCode.Unknown : ExitCode.Ok;
+		return contractExitCode(outcome.data.decisions);
 	}
 	if (context.format === 'json') {
 		writeJson(context.stdout, { schemaVersion: 1, command: 'contract.evaluate', result: outcome.data });
@@ -40,8 +49,5 @@ export async function contractCommand(context: CommandContext, subcommand: strin
 			}
 		}
 	}
-	if (outcome.data.decisions.some((decision) => decision.result === 'fail')) {
-		return ExitCode.FindingFailed;
-	}
-	return outcome.data.decisions.some((decision) => decision.result === 'unknown') ? ExitCode.Unknown : ExitCode.Ok;
+	return contractExitCode(outcome.data.decisions);
 }

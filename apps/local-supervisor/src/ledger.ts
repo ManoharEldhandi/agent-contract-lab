@@ -52,6 +52,16 @@ export interface EvidenceLedger {
 
 const SESSIONS_DIRECTORY = 'sessions';
 
+function immutableRecord<Value>(value: Value): Value {
+	if (typeof value === 'object' && value !== null && !Object.isFrozen(value)) {
+		for (const child of Object.values(value)) {
+			immutableRecord(child);
+		}
+		Object.freeze(value);
+	}
+	return value;
+}
+
 export function workspaceFingerprint(workspacePath: string): string {
 	return createHash('sha256').update(workspacePath).digest('hex');
 }
@@ -200,7 +210,7 @@ export class FileEvidenceLedger implements EvidenceLedger {
 			tokenUsage: { status: 'unknown', reason: 'not-observed' },
 		};
 		await this.enqueue(async () => {
-			this.sessions.set(sessionId, session);
+			this.cacheSession(session);
 			await this.writeSession(session);
 		});
 		await this.append(sessionId, {
@@ -213,39 +223,40 @@ export class FileEvidenceLedger implements EvidenceLedger {
 	}
 
 	async append(sessionId: string, draft: EventDraft): Promise<SessionEvent> {
+		const redactedPayload = redactJson(draft.payload);
+		const snapshot = immutableRecord({ ...draft, payload: redactedPayload.value as JsonObject });
 		let result: SessionEvent | undefined;
 		await this.enqueue(async () => {
 			const session = await this.requireSession(sessionId);
-			if (isTerminal(session.state) && draft.kind !== 'policy.decision') {
+			if (isTerminal(session.state) && snapshot.kind !== 'policy.decision') {
 				throw new Error(`session ${sessionId} is already ${session.state}`);
 			}
-			const redactedPayload = redactJson(draft.payload);
-			const event: SessionEvent = {
+			const event: SessionEvent = immutableRecord({
 				schemaVersion: SCHEMA_VERSION,
 				eventId: `evt_${randomUUID()}`,
 				sessionId,
 				sequence: session.eventCount + 1,
 				occurredAt: this.now().toISOString(),
-				...(draft.sourceTimestamp === undefined ? {} : { sourceTimestamp: draft.sourceTimestamp }),
-				kind: draft.kind,
-				actor: draft.actor,
-				evidenceGrade: draft.evidenceGrade,
-				...(draft.evidenceGrade === 'unknown' && draft.unknownReason !== undefined ? { unknownReason: draft.unknownReason } : {}),
-				...(draft.correlationId === undefined ? {} : { correlationId: draft.correlationId }),
-				payload: redactedPayload.value as JsonObject,
+				...(snapshot.sourceTimestamp === undefined ? {} : { sourceTimestamp: snapshot.sourceTimestamp }),
+				kind: snapshot.kind,
+				actor: snapshot.actor,
+				evidenceGrade: snapshot.evidenceGrade,
+				...(snapshot.evidenceGrade === 'unknown' && snapshot.unknownReason !== undefined ? { unknownReason: snapshot.unknownReason } : {}),
+				...(snapshot.correlationId === undefined ? {} : { correlationId: snapshot.correlationId }),
+				payload: snapshot.payload,
 				redaction: {
 					policyVersion: REDACTION_POLICY_VERSION,
 					replacements: redactedPayload.replacements,
-					truncated: draft.truncated === true,
+					truncated: snapshot.truncated === true,
 				},
-			};
+			});
 			const parsed = parseSessionEvent(event);
 			if (!parsed.ok) {
 				throw new Error(`internal event validation failed: ${parsed.issues.map((issue) => `${issue.path}: ${issue.message}`).join('; ')}`);
 			}
 			await appendFile(eventPath(this.root, sessionId), `${JSON.stringify(event)}\n`, { encoding: 'utf8', mode: 0o600 });
 			const updated = { ...session, eventCount: event.sequence };
-			this.sessions.set(sessionId, updated);
+			this.cacheSession(updated);
 			await this.writeSession(updated);
 			result = event;
 		});
@@ -266,7 +277,7 @@ export class FileEvidenceLedger implements EvidenceLedger {
 		await this.enqueue(async () => {
 			const session = await this.requireSession(sessionId);
 			const updated: SessionRecord = { ...session, state, completedAt: this.now().toISOString() };
-			this.sessions.set(sessionId, updated);
+			this.cacheSession(updated);
 			await this.writeSession(updated);
 		});
 		return this.requireSession(sessionId);
@@ -309,7 +320,7 @@ export class FileEvidenceLedger implements EvidenceLedger {
 					totalTokens: totalTokens + normalized.totalTokens,
 				},
 			};
-			this.sessions.set(sessionId, updated);
+			this.cacheSession(updated);
 			await this.writeSession(updated);
 		});
 		return this.requireSession(sessionId);
@@ -329,7 +340,7 @@ export class FileEvidenceLedger implements EvidenceLedger {
 				...session,
 				tokenUsage: session.tokenUsage.status === 'reported' ? session.tokenUsage : { status: 'unknown', reason },
 			};
-			this.sessions.set(sessionId, updated);
+			this.cacheSession(updated);
 			await this.writeSession(updated);
 		});
 		return this.requireSession(sessionId);
@@ -343,7 +354,7 @@ export class FileEvidenceLedger implements EvidenceLedger {
 		try {
 			const raw = await readFile(sessionPath(this.root, sessionId), 'utf8');
 			const session = parseStoredSession(JSON.parse(raw));
-			this.sessions.set(sessionId, session);
+			this.cacheSession(session);
 			return session;
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -377,7 +388,7 @@ export class FileEvidenceLedger implements EvidenceLedger {
 					if (!parsed.ok) {
 						throw new Error(`stored event failed validation: ${parsed.issues.map((issue) => `${issue.path}: ${issue.message}`).join('; ')}`);
 					}
-					return parsed.value;
+					return immutableRecord(parsed.value);
 				});
 		} catch (error) {
 			if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -385,6 +396,10 @@ export class FileEvidenceLedger implements EvidenceLedger {
 			}
 			throw error;
 		}
+	}
+
+	private cacheSession(session: SessionRecord): void {
+		this.sessions.set(session.sessionId, immutableRecord(session));
 	}
 
 	private async requireSession(sessionId: string): Promise<SessionRecord> {

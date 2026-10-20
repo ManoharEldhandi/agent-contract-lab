@@ -9,6 +9,103 @@ agent-contract workspace trust .
 
 Install `@agent-contract-lab/adapter-sdk` alongside the code that invokes the model. The SDK reads `AGENT_CONTRACT_SUPERVISOR_URL`, `AGENT_CONTRACT_HOME`, and `AGENT_CONTRACT_TOKEN` from the local environment. It accepts only loopback HTTP supervisor URLs, so the local token never belongs in source code.
 
+## Execute Under A Contract
+
+An observation callback cannot prevent an action. For enforcement, expose tools
+to the agent that call `executeAction()` instead of performing local I/O:
+
+```ts
+import { readFile } from 'node:fs/promises';
+import { LocalSupervisorClient } from '@agent-contract-lab/adapter-sdk';
+
+const client = await LocalSupervisorClient.fromLocalEnvironment();
+const session = await client.startContractSession({
+  workspacePath: process.cwd(),
+  actor: 'my-agent',
+  contractYaml: await readFile('examples/contracts/source-only.yaml', 'utf8'),
+});
+
+const refusal = await session.executeAction({
+  kind: 'file.write', path: 'README.md', content: 'Not permitted by this contract.',
+});
+console.log(refusal.status, refusal.decision.ruleIds);
+
+const result = await session.executeAction({
+  kind: 'command', executable: 'node', args: ['--test', 'src/app.test.cjs'],
+});
+await session.complete(result.success ? 'completed' : 'failed');
+```
+
+The default detached worktree contains committed `HEAD`, not uncommitted source
+changes or installed dependencies. `isolated: false` explicitly opts into the
+trusted source checkout. Actions are serialized within a session; callers receive
+`completed`, `failed`, or `blocked` with a correlation ID and policy decision.
+Never bypass a refusal by falling back to direct I/O. Do not automatically retry
+an action after a transport timeout: its outcome may be unknown to the client.
+
+Supported actions are `command`, `file.read`, and `file.write`. A committed
+decision precedes each permitted effect, and missing evidence storage fails
+closed. Completion drains queued actions, captures the final Git diff, evaluates
+the attached contract, and removes its worktree. File reads/writes are limited to
+256 KiB; combined command output is limited to 64 KiB; deadlines are 100 ms to
+30 seconds; at most 32 actions may be pending in one session.
+
+Stateful policies additionally support `knowledge.search` and `model.call`.
+`session.transitionPhase(name)` requests an allowed workflow transition;
+`session.getRuntime()` returns the immutable active policy and live counters.
+Runtime policies may tighten the default output/deadline limits. Deadline expiry
+actively interrupts sessions. Verification-gated completion remains recoverable
+until the session completes or expires. The
+[runtime guide](runtime-policies.md) lists all controls and gateway setup.
+
+A committed
+policy is never replaced by retrieved guidance, a client usage declaration, or
+an editor change. Supply bounded `knowledgeDocuments` when creating the session
+to make local runbook context available. Model calls with `knowledgeQuery` consume
+both model and knowledge permissions/quotas; usage is retained from the actual
+server-owned provider response, not a model's estimate.
+
+Path rules gate explicit file reads and writes. Allowed commands are not
+OS-sandboxed and can have effects beyond those tools; their observable Git file
+changes are checked afterward. Unobserved, ignored, transient, external, or
+ambiguously changed files cannot be claimed as prevented. Native Codex logging
+and external event bridges do not automatically route their tools through this
+API.
+
+## Optional Model Logger Traces
+
+The latest verified Model Logger source is
+[`afb120c8`](https://github.com/ManoharEldhandi/model-worklog/commit/afb120c8cc9fb862c8e76a71ded9c1c04524cd57)
+(2026-10-20); the demo pins SDK, schema, and collector `2.1.0`.
+Contract Lab adds deterministic control to observable activity rather than
+treating a logger as an enforcement boundary.
+
+```ts
+import { ModelLoggerTelemetry } from '@agent-contract-lab/adapter-sdk';
+import { createLocalModelLogger } from 'model-worklog-sdk';
+
+const logger = await createLocalModelLogger({ projectId: 'contracts', serviceName: 'my-agent' });
+const telemetry = new ModelLoggerTelemetry(logger, {
+  onTelemetryError: () => console.warn('Optional tracing unavailable.'),
+});
+const session = await client.startContractSession({
+  workspacePath: process.cwd(), actor: 'my-agent', contractYaml, telemetry,
+});
+```
+
+Use a configured, project-scoped Model Logger writer credential. Collector setup
+is application-owned; omit telemetry if optional setup is unavailable. The
+strategy never retries or duplicates the guarded operation, and tracer failures
+or diagnostic callback failures do not change the supervisor result. It captures
+tool metadata and fixed outcome event names, not file contents or tool arguments.
+Model Logger spans remain `model-declared`; they never promote evidence grades.
+
+Finish the session, then call `logger.shutdown()` and check its returned delivery
+result. An incomplete telemetry delivery must not cause the action to execute
+again. Enforcement and its redacted ledger do not depend on Model Logger or a
+running collector. `npm run demo` provisions isolated scoped credentials and
+verifies the actual collector path without changing personal logger settings.
+
 ## Record An AI Run
 
 Create one session for the agent run and report observable activity as it occurs. Plans and reasoning summaries must be provider-visible, high-level text; never submit hidden reasoning or chain-of-thought.

@@ -1,8 +1,11 @@
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
 import { test } from 'node:test';
 
-import type { SessionEvent } from '@agent-contract-lab/event-schema';
-import { LocalSupervisorClient, formatSessionEventText } from './index';
+import type { ContractActionResult, SessionEvent } from '@agent-contract-lab/event-schema';
+import { createModelLogger } from 'model-worklog-sdk';
+import type { TraceSpan } from 'model-worklog-schema';
+import { LocalSupervisorClient, ModelLoggerTelemetry, SupervisorRequestError, formatSessionEventText, type ModelLoggerTrace } from './index';
 
 function sessionBody(): Record<string, unknown> {
 	return {
@@ -15,6 +18,108 @@ function sessionBody(): Record<string, unknown> {
 test('rejects remote and HTTPS supervisor URLs', () => {
 	assert.throws(() => new LocalSupervisorClient({ supervisorUrl: 'http://example.com', token: 'secret' }), /loopback/);
 	assert.throws(() => new LocalSupervisorClient({ supervisorUrl: 'https://127.0.0.1:43199', token: 'secret' }), /HTTP/);
+});
+
+test('authenticated SDK requests refuse redirects rather than forwarding the local credential', async () => {
+	let forwarded = false;
+	const target = createServer((_request, response) => { forwarded = true; response.end(JSON.stringify({ session: sessionBody() })); });
+	await new Promise<void>((resolve) => target.listen(0, '127.0.0.1', resolve));
+	const targetAddress = target.address();
+	assert.ok(targetAddress && typeof targetAddress !== 'string');
+	const redirect = createServer((_request, response) => {
+		response.writeHead(302, { location: `http://127.0.0.1:${targetAddress.port}/forwarded` });
+		response.end();
+	});
+	await new Promise<void>((resolve) => redirect.listen(0, '127.0.0.1', resolve));
+	const redirectAddress = redirect.address();
+	assert.ok(redirectAddress && typeof redirectAddress !== 'string');
+	try {
+		const client = new LocalSupervisorClient({ supervisorUrl: `http://127.0.0.1:${redirectAddress.port}`, token: 'never-forward-this' });
+		await assert.rejects(client.startSession({ workspacePath: '/workspace', actor: 'test' }), (error: unknown) => error instanceof SupervisorRequestError && error.statusCode === 0);
+		assert.equal(forwarded, false);
+	} finally {
+		for (const server of [redirect, target]) {
+			server.closeAllConnections();
+			await new Promise<void>((resolve) => server.close(() => resolve()));
+		}
+	}
+});
+
+test('contract SDK uses supervisor-owned actions with isolation by default and a pluggable observer', async () => {
+	const requests: { path: string; body: Record<string, unknown> }[] = [];
+	let observed = 0;
+	const client = new LocalSupervisorClient({
+		supervisorUrl: 'http://127.0.0.1:43199', token: 'local-token',
+		fetchImpl: async (input, init) => {
+			const path = new URL(input).pathname;
+			requests.push({ path, body: JSON.parse(init?.body ?? '{}') as Record<string, unknown> });
+			return path === '/v1/sessions'
+				? new Response(JSON.stringify({ session: { ...sessionBody(), runMode: 'contract' } }), { status: 201 })
+				: new Response(JSON.stringify({ action: { correlationId: 'action_1', status: 'blocked', success: false, decision: { allowed: false, ruleIds: ['paths.allow'], message: 'Refused' }, result: {} } }));
+		},
+	});
+	const session = await client.startContractSession({
+		workspacePath: '/workspace', actor: 'agent', contractYaml: 'version: 1\nname: test',
+		telemetry: { observe: async (action, operation) => { observed += 1; assert.equal(action.kind, 'file.write'); return operation(); } },
+	});
+	assert.equal((await session.executeAction({ kind: 'file.write', path: 'README.md', content: 'bad' })).status, 'blocked');
+	assert.equal(requests[0]?.body.isolated, true);
+	assert.equal(requests[0]?.body.runMode, 'contract');
+	assert.equal(requests[1]?.path, '/v1/sessions/ses_sdk/actions');
+	assert.equal(requests[1]?.body.kind, 'file.write');
+	assert.equal(observed, 1);
+});
+
+test('Model Logger telemetry failures and repeated callbacks never change or duplicate an action', async () => {
+	const result: ContractActionResult = { correlationId: 'action', status: 'completed', success: true, decision: { allowed: true, ruleIds: [], message: 'Allowed' }, result: {} };
+	const loggers: ModelLoggerTrace[] = [
+		{ trace: () => { throw new Error('before callback'); } },
+		{ trace: async (_options, operation) => { await operation(); throw new Error('after callback'); } },
+		{ trace: async (_options, operation) => { await operation(); return operation(); } },
+		{ trace: () => new Promise(() => undefined) },
+	];
+	for (const logger of loggers) {
+		let calls = 0;
+		const observer = new ModelLoggerTelemetry(logger, { onTelemetryError: () => { throw new Error('diagnostic failure'); } });
+		assert.equal(await observer.observe({ kind: 'file.write', path: 'src/app.ts', content: 'private input' }, async () => { calls += 1; return result; }), result);
+		assert.equal(calls, 1);
+	}
+});
+
+test('Model Logger telemetry preserves the original supervisor error and captures no content by default', async () => {
+	let metadata: unknown;
+	const observer = new ModelLoggerTelemetry({ trace: async (options, operation) => { metadata = options; return operation(); } });
+	const original = new Error('supervisor unavailable');
+	await assert.rejects(observer.observe({ kind: 'file.write', path: 'src/app.ts', content: 'never-in-span-options' }, async () => { throw original; }), (error: unknown) => error === original);
+	assert.equal(JSON.stringify(metadata).includes('never-in-span-options'), false);
+	assert.equal(JSON.stringify(metadata).includes('src/app.ts'), false);
+});
+
+test('Model Logger 2.1 SDK exports correlated metadata-only spans around a supervised action', async () => {
+	const spans = new Map<string, TraceSpan>();
+	const logger = createModelLogger({
+		projectId: 'contract-test', serviceName: 'contract-test', flushIntervalMs: 0,
+		exporter: { export: async (batch) => { for (const span of batch.spans) { spans.set(span.spanId, span); } return { schemaVersion: 1, accepted: batch.spans.length, duplicates: 0 }; } },
+	});
+	const observer = new ModelLoggerTelemetry(logger);
+	const result: ContractActionResult = { correlationId: 'action', status: 'blocked', success: false, decision: { allowed: false, ruleIds: ['paths.allow'], message: 'Refused' }, result: {} };
+	try {
+		await logger.trace({ name: 'contract.run', kind: 'agent' }, () => observer.observe({ kind: 'file.write', path: 'private-file', content: 'private-content' }, async () => result));
+		assert.equal((await logger.shutdown()).success, true);
+		const latest = [...spans.values()];
+		assert.equal(latest.length, 2);
+		const root = latest.find((span) => span.kind === 'agent');
+		const tool = latest.find((span) => span.kind === 'tool');
+		assert.ok(root && tool);
+		assert.equal(tool.parentSpanId, root.spanId);
+		assert.equal(tool.state, 'completed');
+		assert.ok(tool.events.some((event) => event.name === 'agent-contract.action.blocked'));
+		assert.ok(tool.events.some((event) => event.name === 'agent-contract.policy.refused'));
+		assert.equal(JSON.stringify(latest).includes('private-content'), false);
+		assert.equal(JSON.stringify(latest).includes('private-file'), false);
+	} finally {
+		await logger.shutdown();
+	}
 });
 
 test('emits declared activity and reported usage through the local protocol', async () => {

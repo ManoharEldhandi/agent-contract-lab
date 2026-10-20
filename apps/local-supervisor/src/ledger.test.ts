@@ -37,6 +37,25 @@ test('persists redacted, supervisor-sequenced events without a raw workspace pat
 	});
 });
 
+test('snapshots queued payloads and returns deeply immutable session and event records', async () => {
+	await withLedger(async (ledger) => {
+		const session = await ledger.createSession({ runMode: 'observe', actor: 'demo-agent', workspacePath: '/workspace' });
+		const payload = { nested: { values: ['original'] } };
+		const pending = ledger.append(session.sessionId, { kind: 'agent.message', actor: 'demo-agent', evidenceGrade: 'model-declared', payload });
+		payload.nested.values[0] = 'mutated';
+		const event = await pending;
+		assert.deepEqual(event.payload, { nested: { values: ['original'] } });
+		assert.ok(Object.isFrozen(session));
+		assert.ok(Object.isFrozen(session.workspace));
+		assert.ok(Object.isFrozen(event));
+		assert.ok(Object.isFrozen((event.payload.nested as { values: string[] }).values));
+		assert.throws(() => { (event.payload.nested as { values: string[] }).values.push('bad'); }, TypeError);
+		const retained = (await ledger.listEvents(session.sessionId)).at(-1)!;
+		assert.ok(Object.isFrozen(retained.payload.nested));
+		assert.deepEqual(retained.payload, { nested: { values: ['original'] } });
+	});
+});
+
 test('aggregates explicitly reported token totals and retains unknown otherwise', async () => {
 	await withLedger(async (ledger) => {
 		const session = await ledger.createSession({ runMode: 'observe', actor: 'demo-agent', workspacePath: '/workspace' });

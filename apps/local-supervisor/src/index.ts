@@ -13,4 +13,6 @@ export {
 } from './server';
 export { acquireExclusiveStoreLock, defaultDataDirectory, type StoreLock, type TrustedWorkspace } from './state';
 export { DEFAULT_SUPERVISOR_PORT, SUPERVISOR_VERSION } from './version';
+export { OpenAICompatibleGateway, modelProviderFromEnvironment, type ModelProvider, type ModelRequest, type ModelResponse } from './modelGateway';
+export { LocalKnowledgeIndex, type KnowledgeDocument, type KnowledgeResult, type KnowledgeCitation } from './knowledge';
 export { launchDetachedSupervisor, supervisorEntrypointPath, type DetachedSupervisorOptions } from './launcher';

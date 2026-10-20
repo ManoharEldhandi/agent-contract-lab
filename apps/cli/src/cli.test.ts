@@ -177,6 +177,7 @@ test('run sends an explicit executable, argument vector, and isolation mode to t
 	const apiFetch: FetchLike = async (input, init) => {
 		assert.equal(new URL(input).pathname, '/v1/runs');
 		assert.equal(init?.headers?.['x-agent-contract-token'], 'test-token');
+		assert.equal(init?.redirect, 'error');
 		requestBody = init?.body === undefined ? undefined : JSON.parse(init.body);
 		return new Response(JSON.stringify({ schemaVersion: 1, session: validSession({ state: 'running', eventCount: 1 }) }), { status: 202 });
 	};
@@ -186,6 +187,40 @@ test('run sends an explicit executable, argument vector, and isolation mode to t
 		workspacePath: process.cwd(), executable: 'node', args: ['-e', 'process.exit(0)'], actor: 'test-agent', isolated: true,
 	});
 	assert.equal((JSON.parse(result.stdout) as { command: string }).command, 'run');
+});
+
+test('run --contract --wait sends the policy before execution and returns the final verdict', async () => {
+	const directory = await mkdtemp(join(tmpdir(), 'agent-contract-cli-guard-'));
+	const contractPath = join(directory, 'contract.yaml');
+	const contractYaml = 'version: 1\nname: ci-check\nassertions:\n  commands:\n    deny: ["rm *"]\n';
+	await writeFile(contractPath, contractYaml);
+	try {
+		const paths: string[] = [];
+		const apiFetch: FetchLike = async (input, init) => {
+			const path = new URL(input).pathname;
+			paths.push(path);
+			if (path === '/v1/runs') {
+				assert.equal(JSON.parse(init?.body ?? '{}').contractYaml, contractYaml);
+				return new Response(JSON.stringify({ schemaVersion: 1, session: validSession({ state: 'running' }) }), { status: 202 });
+			}
+			if (path.endsWith('/contracts/evaluate')) {
+				return new Response(JSON.stringify({ schemaVersion: 1, contractName: 'ci-check', decisions: [{ result: 'unknown', ruleId: 'commands.requirePreAction', message: 'Launch guard is not agent interception' }] }));
+			}
+			return new Response(JSON.stringify({ schemaVersion: 1, session: validSession() }));
+		};
+		const result = await run(['run', '--contract', contractPath, '--wait', '--', 'node', '--version'], apiFetch, { AGENT_CONTRACT_TOKEN: 'test-token' });
+		assert.equal(result.code, ExitCode.Unknown);
+		assert.deepEqual(paths, ['/v1/runs', '/v1/sessions/ses_demo', '/v1/sessions/ses_demo/contracts/evaluate']);
+		assert.equal((JSON.parse(result.stdout) as { result: { session: { state: string } } }).result.session.state, 'completed');
+	} finally {
+		await rm(directory, { recursive: true, force: true });
+	}
+});
+
+test('run rejects a missing contract path and exits nonzero for a refused launch', async () => {
+	assert.equal((await run(['run', '--contract', '--', 'node', '--version'])).code, ExitCode.InvalidInvocation);
+	const result = await run(['run', '--', 'node', '--version'], jsonFetch({ schemaVersion: 1, session: validSession({ state: 'failed' }) }, 202), { AGENT_CONTRACT_TOKEN: 'test-token' });
+	assert.equal(result.code, ExitCode.FindingFailed);
 });
 
 test('agent codex starts a directly supervised agent task with explicit limits', async () => {
@@ -201,6 +236,14 @@ test('agent codex starts a directly supervised agent task with explicit limits',
 		workspacePath: process.cwd(), task: 'Fix the parser', model: 'gpt-5.6-terra', maxDurationMs: 60_000, maxTokens: 1_000,
 	});
 	assert.equal((JSON.parse(result.stdout) as { command: string }).command, 'agent codex');
+});
+
+test('native agent commands reject contract flags rather than silently ignoring enforcement', async () => {
+	let requested = false;
+	const result = await run(['agent', 'codex', 'Repair', '--contract', 'policy.yaml'], async () => { requested = true; throw new Error('must not launch'); });
+	assert.equal(result.code, ExitCode.InvalidInvocation);
+	assert.equal(requested, false);
+	assert.match(result.stderr, /does not enforce/);
 });
 
 test('workspace trust resolves a relative caller path before sending it to the supervisor', async () => {

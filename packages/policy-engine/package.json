@@ -18,6 +18,7 @@
   },
   "dependencies": {
     "@agent-contract-lab/event-schema": "^0.1.0",
-    "minimatch": "^10.2.4"
+    "minimatch": "^10.2.4",
+    "zod": "4.6.7"
   }
 }

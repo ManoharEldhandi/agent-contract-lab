@@ -83,6 +83,7 @@ export async function requestSupervisor<T>(
 	try {
 		response = await fetchImpl(new URL(pathname, base), {
 			method,
+			redirect: 'error',
 			headers: { 'content-type': 'application/json', 'x-agent-contract-token': token },
 			...(body === undefined ? {} : { body: JSON.stringify(body) }),
 			signal: AbortSignal.timeout(5_000),

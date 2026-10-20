@@ -1,5 +1,38 @@
 # Delivery Roadmap
 
+## Implemented Stateful Policy Product
+
+- Stage-specific tool permissions and explicit bounded repair transitions.
+- Active session expiry, per-action deadlines, token admission and retry limits.
+- Ten additional controls documented in [Stateful Policies](runtime-policies.md).
+- Local cited SQLite FTS5 retrieval and retrieval-augmented supervised model calls.
+- A loopback policy console with real fixture and connected-model workflows,
+  policy editing, manual actions, resource state, decisions, and evidence export.
+- Model gateway, missing usage, retry/phase, concurrency, expiry, UTF-8 output,
+  source-isolation, and product HTTP regression coverage.
+
+Lexical policy/runbook retrieval is delivered. Broader event investigation,
+embedding search, organization policy sources, vendor-specific interception,
+and OS sandboxing remain separate capabilities.
+
+## Implemented Contract Execution Slice
+
+- Immutable deterministic command allow/deny and path rules with strict input validation.
+- Supervisor-owned command/read/write actions with pre-action evidence, bounded I/O,
+	serialized queues, default worktree isolation, and final contract evaluation.
+- Hash-bound pre-action proofs and Git-backed command side-effect path checks;
+	incomplete evidence remains unknown.
+- CLI `run --contract --wait`, guarded VS Code launches, and real editor verdict views.
+- Optional Model Logger 2.1.0 strategy with failure isolation and actual collector tests.
+- `npm run demo`: reproducible scripted repair, two real refusals, real failing/passing
+	tests, unchanged source, verified bundles, tamper detection, and correlated traces.
+- The release check and CI run the demo and retain redacted JSON artifacts.
+
+This is a runnable end-to-end contract workflow, not completion of every product
+roadmap item. Vendor-specific effective-instruction resolution, universal native
+interception, organization-policy loading, OS sandboxing, retrieval, comparison,
+and hosted sharing remain separate work.
+
 ## Implemented v0 workflow additions
 
 - Claude Code hook and Codex App Server notification mapping bridges, preserving `model-declared` provenance and unknown input gaps.
@@ -9,7 +42,9 @@
 - Trusted detached Git worktree execution with `agent-contract run --isolated` and explicit lifecycle evidence.
 - Portable redacted JSON evidence bundles with canonical SHA-256 manifests, CLI export/verify, and VS Code export.
 
-See ADRs 0005 and 0006 for the isolation and bundle boundaries. These additions do not claim a full OS sandbox, process-managed vendor adapter, signed bundle provenance, or hosted CI service.
+See ADRs 0005 through 0007 for isolation, bundle, and supervised-action boundaries.
+The direct Codex relay supplies native observation, not universal interception.
+These additions do not claim an OS sandbox, signed bundle provenance, or hosted CI service.
 
 ## Phase 0: Foundation
 

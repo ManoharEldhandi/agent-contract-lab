@@ -1,0 +1,24 @@
+{
+  "name": "@agent-contract-lab/policy-console",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Local product console for stateful agent policies and cited knowledge",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "@agent-contract-lab/adapter-sdk": "^0.1.0",
+    "@agent-contract-lab/local-supervisor": "^0.1.0",
+    "@agent-contract-lab/policy-engine": "^0.1.0",
+    "@fontsource/ibm-plex-mono": "5.3.0",
+    "@fontsource/ibm-plex-sans": "5.3.0",
+    "lucide": "1.60.0",
+    "yaml": "^2.8.2"
+  }
+}

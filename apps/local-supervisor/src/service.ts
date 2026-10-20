@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, realpath } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 
-import { evaluateContract, parseContract } from '@agent-contract-lab/policy-engine';
+import { contractFingerprint, evaluateAction, evaluateContract, parseContract, type AgentContract } from '@agent-contract-lab/policy-engine';
 import { parse as parseYaml } from 'yaml';
 
 import {
@@ -25,9 +25,15 @@ import {
 
 import { FileEvidenceLedger, workspaceReference, type EvidenceLedger } from './ledger';
 import { createCodexRelay, type CodexRelayControl, type CodexRelayFactory } from './codexRelay';
+import { ContractExecution, type ContractAction } from './contractExecution';
+import { AgentActionExecutor } from './agentActions';
 import { createEvidenceBundle, verifyEvidenceBundle } from './evidenceBundle';
+import { LocalKnowledgeIndex, type KnowledgeDocument } from './knowledge';
+import { modelProviderFromEnvironment, modelTokenReservation, type ModelProvider } from './modelGateway';
 import { calculateCostReport } from './pricing';
+import { redactJson } from './redaction';
 import { acquireExclusiveStoreLock, createOrLoadAuthToken, readTrustedWorkspaces, tokensMatch, writeTrustedWorkspaces, type StoreLock, type TrustedWorkspace } from './state';
+import { MAX_ACTION_FILE_BYTES, WorkspaceActionExecutor } from './workspaceActions';
 
 const MAX_REQUEST_BYTES = 2 * 1024 * 1024;
 const MAX_CAPTURED_OUTPUT_CHARS = 64 * 1024;
@@ -58,6 +64,7 @@ export interface SupervisorServiceOptions {
 	readonly ledger?: EvidenceLedger;
 	/** Injectable only for protocol tests; production uses the direct relay. */
 	readonly codexRelayFactory?: CodexRelayFactory;
+	readonly modelProvider?: ModelProvider;
 }
 
 interface CreateSessionBody {
@@ -65,6 +72,8 @@ interface CreateSessionBody {
 	readonly actor: string;
 	readonly runMode: RunMode;
 	readonly title?: string;
+	readonly contract?: AgentContract;
+	readonly isolated: boolean;
 }
 
 interface RunBody {
@@ -73,6 +82,7 @@ interface RunBody {
 	readonly args: string[];
 	readonly actor: string;
 	readonly isolated: boolean;
+	readonly contract?: AgentContract;
 }
 
 interface CodexSessionBody {
@@ -117,6 +127,18 @@ interface GitSnapshot {
 interface IsolatedWorktree {
 	readonly sourceWorkspacePath: string;
 	readonly workspacePath: string;
+}
+
+interface ContractSessionContext {
+	readonly contract: AgentContract;
+	readonly execution: ContractExecution;
+	readonly executor: AgentActionExecutor;
+	readonly workspacePath: string;
+	readonly baseline: GitSnapshot;
+	readonly worktree?: IsolatedWorktree;
+	completion?: Promise<SessionRecord>;
+	expiry?: ReturnType<typeof setTimeout>;
+	expired?: boolean;
 }
 
 function errorBody(code: string, message: string): ApiResult {
@@ -338,6 +360,20 @@ function policyPayload(decision: import('@agent-contract-lab/event-schema').Poli
 	};
 }
 
+function contractFromYaml(value: unknown): AgentContract | undefined {
+	if (value === undefined) {
+		return undefined;
+	}
+	if (typeof value !== 'string' || value.trim() === '') {
+		throw new Error('contractYaml must be a non-empty YAML string');
+	}
+	const parsed = parseContract(parseYaml(value, { maxAliasCount: 0 }));
+	if (!parsed.ok) {
+		throw new Error(`invalid contract: ${parsed.issues.join('; ')}`);
+	}
+	return parsed.contract;
+}
+
 export class SupervisorService {
 	readonly maxRequestBytes = MAX_REQUEST_BYTES;
 
@@ -348,16 +384,18 @@ export class SupervisorService {
 		private readonly now: () => Date,
 		private readonly storeLock: StoreLock,
 		private readonly codexRelayFactory: CodexRelayFactory,
+		private readonly modelProvider?: ModelProvider,
 	) {}
 
 	private readonly codexRelays = new Map<string, CodexRelayControl>();
+	private readonly contractSessions = new Map<string, ContractSessionContext>();
 
 	static async open(options: SupervisorServiceOptions): Promise<SupervisorService> {
 		const storeLock = await acquireExclusiveStoreLock(options.dataDirectory, options.instanceId ?? `sup_${randomUUID()}`);
 		try {
 			const token = await createOrLoadAuthToken(options.dataDirectory, options.authToken);
 			const ledger = options.ledger ?? await FileEvidenceLedger.open(options.dataDirectory, options.now);
-			return new SupervisorService(options.dataDirectory, token, ledger, options.now ?? (() => new Date()), storeLock, options.codexRelayFactory ?? createCodexRelay);
+			return new SupervisorService(options.dataDirectory, token, ledger, options.now ?? (() => new Date()), storeLock, options.codexRelayFactory ?? createCodexRelay, options.modelProvider ?? modelProviderFromEnvironment());
 		} catch (error) {
 			await storeLock.close();
 			throw error;
@@ -369,6 +407,10 @@ export class SupervisorService {
 	}
 
 	async close(): Promise<void> {
+		for (const context of this.contractSessions.values()) {
+			context.executor.stop();
+		}
+		await Promise.all([...this.contractSessions.keys()].map((sessionId) => this.finishContractSession(sessionId, 'interrupted')));
 		await Promise.all([...this.codexRelays.values()].map((relay) => relay.shutdown()));
 		await this.storeLock.close();
 	}
@@ -401,7 +443,7 @@ export class SupervisorService {
 				return this.verifyEvidenceBundle(request.body);
 			}
 
-			const match = /^\/v1\/sessions\/([^/]+)(?:\/(events|usage|complete|cancel|cost|evidence-bundle|contracts\/evaluate))?$/.exec(request.pathname);
+			const match = /^\/v1\/sessions\/([^/]+)(?:\/(events|usage|complete|cancel|cost|evidence-bundle|actions|runtime|workflow|contracts\/evaluate))?$/.exec(request.pathname);
 			if (match === null || match[1] === undefined) {
 				return errorBody('not_found', `unknown path ${request.pathname}`);
 			}
@@ -430,6 +472,15 @@ export class SupervisorService {
 			}
 			if (operation === 'contracts/evaluate' && request.method === 'POST') {
 				return this.evaluateContract(sessionId, request.body);
+			}
+			if (operation === 'actions' && request.method === 'POST') {
+				return this.executeContractAction(sessionId, request.body);
+			}
+			if (operation === 'runtime' && request.method === 'GET') {
+				return this.getContractRuntime(sessionId);
+			}
+			if (operation === 'workflow' && request.method === 'POST') {
+				return this.transitionContractPhase(sessionId, request.body);
 			}
 			return errorBody('method_not_allowed', `method ${request.method} is not allowed on ${request.pathname}`);
 		} catch (error) {
@@ -461,21 +512,175 @@ export class SupervisorService {
 		if (!workspace.trusted) {
 			return errorBody('workspace_not_trusted', `workspace ${workspace.label} is not trusted`);
 		}
+		if (parsed.contract !== undefined) {
+			return this.createContractSession(parsed, workspace, parsed.contract, this.parseKnowledgeDocuments(body));
+		}
 		const session = await this.ledger.createSession({ ...parsed, workspacePath: workspace.workspacePath });
 		return ok({ schemaVersion: 1, session }, 201);
 	}
 
+	private async createContractSession(parsed: CreateSessionBody, workspace: TrustedWorkspaceResult, contract: AgentContract, documents: readonly KnowledgeDocument[]): Promise<ApiResult> {
+		const worktree = parsed.isolated ? await createIsolatedWorktree(this.dataDirectory, workspace.workspacePath) : undefined;
+		if (parsed.isolated && worktree === undefined) {
+			throw new Error('could not create an isolated Git worktree for the contract session');
+		}
+		const workspacePath = worktree?.workspacePath ?? workspace.workspacePath;
+		const session = await this.ledger.createSession({ ...parsed, workspacePath: workspace.workspacePath });
+		const knowledge = new LocalKnowledgeIndex([
+			{ source: `policy://${contractFingerprint(contract)}`, title: `Attached policy: ${contract.name}`, content: JSON.stringify(redactJson(JSON.parse(JSON.stringify(contract)) as JsonObject).value, null, 2).slice(0, 16_384), origin: 'attached-policy' },
+			...documents,
+		]);
+		const executor = new AgentActionExecutor(new WorkspaceActionExecutor(workspacePath, process.env, contract.runtime?.limits), knowledge, this.modelProvider, contract.runtime?.limits?.maxOutputBytes);
+		const execution = new ContractExecution({
+			contractName: contract.name,
+			contractSha256: contractFingerprint(contract),
+			runtimePolicy: contract.runtime, verificationCommands: contract.assertions?.commands?.requireSuccess,
+			now: () => this.now().getTime(),
+			recordUsage: (usage) => this.ledger.recordUsage(session.sessionId, usage, { actor: 'model-gateway', evidenceGrade: 'observed-native' }),
+			policy: { evaluate: (action) => evaluateAction(contract, action) },
+			executor,
+			evidence: { append: (draft) => this.ledger.append(session.sessionId, draft) },
+		});
+		const context: ContractSessionContext = { contract, executor, execution, workspacePath, baseline: await captureGitSnapshot(workspacePath), worktree };
+		this.contractSessions.set(session.sessionId, context);
+		const duration = contract.runtime?.limits?.maxDurationMs;
+		if (duration !== undefined) {
+			context.expiry = setTimeout(() => { void this.expireContractSession(session.sessionId).catch(() => undefined); }, Math.max(1, duration - (this.now().getTime() - execution.snapshot().state.startedAt)));
+			context.expiry.unref();
+		}
+		await this.ledger.append(session.sessionId, {
+			kind: 'instruction.loaded', actor: 'supervisor', evidenceGrade: 'computed',
+			payload: {
+				source: 'contract', scope: 'supervisor-actions', contractName: contract.name,
+				contractSha256: contractFingerprint(contract),
+				contract: JSON.parse(JSON.stringify(contract)) as JsonObject,
+			},
+		});
+		if (worktree !== undefined) {
+			await this.ledger.append(session.sessionId, { kind: 'worktree.created', actor: 'supervisor', evidenceGrade: 'observed-boundary', payload: { isolated: true, sourceWorkspace: workspace.label } });
+		}
+		return ok({ schemaVersion: 1, session: await this.ledger.getSession(session.sessionId) }, 201);
+	}
+
+	private async executeContractAction(sessionId: string, body: unknown): Promise<ApiResult> {
+		const context = this.contractSessions.get(sessionId);
+		if (context === undefined) {
+			throw new Error('actions require an active supervisor-owned contract session');
+		}
+		const action = this.parseContractAction(body);
+		const result = await context.execution.run(action);
+		return ok({ schemaVersion: 1, action: { ...result, result: redactJson(result.result).value } });
+	}
+
+	private parseKnowledgeDocuments(body: unknown): readonly KnowledgeDocument[] {
+		const supplied = asRecord(body)?.knowledgeDocuments ?? [];
+		if (!Array.isArray(supplied) || supplied.length > 31) { throw new Error('knowledgeDocuments must contain at most 31 documents'); }
+		return supplied.map((input: unknown) => {
+			const value = asRecord(input);
+			if (value === undefined) { throw new Error('knowledge document must be an object'); }
+			const source = requiredString(value, 'source');
+			const title = requiredString(value, 'title');
+			const content = requiredString(value, 'content');
+			if (source === undefined || title === undefined || content === undefined || source.length > 256 || title.length > 256 || content.length > 16_384) {
+				throw new Error('knowledge documents require bounded source, title and content strings');
+			}
+			const redacted = redactJson({ source, title, content }).value as { source: string; title: string; content: string };
+			return Object.freeze({ ...redacted, origin: 'user-supplied' as const });
+		});
+	}
+
+	private async getContractRuntime(sessionId: string): Promise<ApiResult> {
+		const context = this.contractSessions.get(sessionId);
+		if (context !== undefined) { return ok({ schemaVersion: 1, runtime: context.execution.snapshot() }); }
+		const retained = (await this.ledger.listEvents(sessionId)).filter((event) => event.kind === 'runtime.snapshot' && event.evidenceGrade === 'computed').at(-1);
+		return retained === undefined ? errorBody('not_found', 'No retained contract runtime exists for this session.') : ok({ schemaVersion: 1, runtime: retained.payload });
+	}
+
+	private async transitionContractPhase(sessionId: string, body: unknown): Promise<ApiResult> {
+		const context = this.contractSessions.get(sessionId);
+		const value = asRecord(body);
+		const phase = value === undefined ? undefined : requiredString(value, 'phase');
+		if (context === undefined || phase === undefined) { throw new Error('workflow transition requires an active contract session and target phase'); }
+		const decision = await context.execution.transition(phase);
+		return ok({ schemaVersion: 1, decision, runtime: context.execution.snapshot() });
+	}
+
+	private parseContractAction(body: unknown): ContractAction {
+		const value = asRecord(body);
+		if (value?.kind === 'knowledge.search') {
+			const query = requiredString(value, 'query');
+			if (query === undefined || query.length > 512) { throw new Error('knowledge.search requires a query of at most 512 characters'); }
+			return { kind: 'knowledge.search', query, limit: optionalBoundedInteger(value, 'limit', 5, 1, 8) };
+		}
+		if (value?.kind === 'model.call') {
+			const model = requiredString(value, 'model');
+			const prompt = requiredString(value, 'prompt');
+			const knowledgeQuery = optionalString(value, 'knowledgeQuery');
+			if (model === undefined || model.length > 128 || prompt === undefined || Buffer.byteLength(prompt) > 16_384
+				|| (value.knowledgeQuery !== undefined && (knowledgeQuery === undefined || knowledgeQuery.trim() === '' || knowledgeQuery.length > 512))) {
+				throw new Error('model.call requires a bounded model, prompt, and optional knowledge query');
+			}
+			const maxOutputTokens = optionalBoundedInteger(value, 'maxOutputTokens', 256, 1, 4_096);
+			return { kind: 'model.call', model, prompt, maxOutputTokens, tokenReservation: modelTokenReservation(prompt, maxOutputTokens, knowledgeQuery !== undefined),
+				timeoutMs: optionalBoundedInteger(value, 'timeoutMs', 30_000, 100, 30_000), ...(knowledgeQuery === undefined ? {} : { knowledgeQuery }) };
+		}
+		if (value?.kind === 'command') {
+			const executable = requiredString(value, 'executable');
+			const args = stringArray(value, 'args');
+			if (executable === undefined || args === undefined || args.length > 256 || executable.length + args.join(' ').length > 64 * 1024) {
+				throw new Error('command action requires an executable and at most 256 bounded string arguments');
+			}
+			return { kind: 'command', executable, args, timeoutMs: optionalBoundedInteger(value, 'timeoutMs', 30_000, 100, 30_000) };
+		}
+		if (value?.kind === 'file.read' || value?.kind === 'file.write') {
+			const path = requiredString(value, 'path');
+			if (path === undefined || path.length > 4_096) {
+				throw new Error('file action requires a bounded non-empty path');
+			}
+			if (value.kind === 'file.read') {
+				return { kind: 'file.read', path };
+			}
+			if (typeof value.content !== 'string' || Buffer.byteLength(value.content) > MAX_ACTION_FILE_BYTES) {
+				throw new Error('file.write requires UTF-8 content no larger than 256 KiB');
+			}
+			return { kind: 'file.write', path, content: value.content };
+		}
+		throw new Error('action kind must be command, file.read, file.write, knowledge.search, or model.call');
+	}
+
 	private async startRun(body: unknown): Promise<ApiResult> {
 		const parsed = this.parseRunBody(body);
+		if (parsed.contract?.runtime !== undefined) { throw new Error('Stateful runtime policies require supervisor-owned contract sessions; a managed launch guard cannot enforce them.'); }
 		const workspace = await this.resolveTrustedWorkspace(parsed.workspacePath);
 		if (!workspace.trusted) {
 			return errorBody('workspace_not_trusted', `workspace ${workspace.label} is not trusted`);
 		}
-		const worktree = parsed.isolated ? await createIsolatedWorktree(this.dataDirectory, workspace.workspacePath) : undefined;
-		if (parsed.isolated && worktree === undefined) {
-			throw new Error('could not create an isolated Git worktree; ensure the trusted workspace is a Git worktree with a committed HEAD');
+		if (parsed.contract !== undefined) {
+			const decision = evaluateAction(parsed.contract, { kind: 'command', executable: parsed.executable, args: parsed.args });
+			const session = await this.ledger.createSession({ runMode: 'managed', actor: parsed.actor, workspacePath: workspace.workspacePath, title: `Run ${[parsed.executable, ...parsed.args].join(' ')}` });
+			await this.ledger.append(session.sessionId, {
+				kind: 'policy.decision', actor: 'supervisor', evidenceGrade: 'computed',
+				payload: {
+					decisionId: `dec_${randomUUID()}`, contractName: parsed.contract.name, ruleId: 'commands.launch',
+					phase: 'pre-action', scope: 'managed-launch', result: decision.allowed ? 'pass' : 'fail',
+					allowed: decision.allowed, ruleIds: [...decision.ruleIds], message: decision.message, evidenceEventIds: [],
+				},
+			});
+			if (!decision.allowed) {
+				return ok({ schemaVersion: 1, session: await this.completeWithUsageGap(session.sessionId, 'failed') }, 202);
+			}
+			return this.launchRun(parsed, workspace, session);
 		}
 		const session = await this.ledger.createSession({ runMode: 'managed', actor: parsed.actor, workspacePath: workspace.workspacePath, title: `Run ${[parsed.executable, ...parsed.args].join(' ')}` });
+		return this.launchRun(parsed, workspace, session);
+	}
+
+	private async launchRun(parsed: RunBody, workspace: TrustedWorkspaceResult, session: SessionRecord): Promise<ApiResult> {
+		const worktree = parsed.isolated ? await createIsolatedWorktree(this.dataDirectory, workspace.workspacePath) : undefined;
+		if (parsed.isolated && worktree === undefined) {
+			await this.completeWithUsageGap(session.sessionId, 'failed');
+			throw new Error('could not create an isolated Git worktree; ensure the trusted workspace is a Git worktree with a committed HEAD');
+		}
 		if (worktree !== undefined) {
 			await this.ledger.append(session.sessionId, {
 				kind: 'worktree.created', actor: 'supervisor', evidenceGrade: 'observed-boundary',
@@ -622,8 +827,46 @@ export class SupervisorService {
 		if (state !== 'completed' && state !== 'failed' && state !== 'interrupted') {
 			throw new Error('state must be completed, failed, or interrupted');
 		}
+		if (this.contractSessions.has(sessionId)) {
+			return ok({ schemaVersion: 1, session: await this.finishContractSession(sessionId, state) });
+		}
 		const session = await this.completeWithUsageGap(sessionId, state);
 		return ok({ schemaVersion: 1, session });
+	}
+
+	private finishContractSession(sessionId: string, state: 'completed' | 'failed' | 'interrupted'): Promise<SessionRecord> {
+		const context = this.contractSessions.get(sessionId)!;
+		context.completion ??= this.finalizeContractSession(sessionId, context, state).catch((error: unknown) => { context.completion = undefined; throw error; });
+		return context.completion;
+	}
+
+	private async expireContractSession(sessionId: string): Promise<void> {
+		const context = this.contractSessions.get(sessionId);
+		if (context === undefined) { return; }
+		context.expired = true;
+		context.executor.stop();
+		await this.ledger.append(sessionId, { kind: 'policy.decision', actor: 'supervisor', evidenceGrade: 'computed', payload: {
+			decisionId: `dec_${randomUUID()}`, contractName: context.contract.name, contractSha256: contractFingerprint(context.contract),
+			ruleId: 'runtime.duration', ruleIds: ['runtime.duration'], result: 'fail', phase: 'expiration', scope: 'supervisor-actions',
+			allowed: false, message: 'The session duration limit expired; supervised execution was interrupted.', evidenceEventIds: [],
+		} });
+		try { await this.finishContractSession(sessionId, 'interrupted'); }
+		catch (error) { if (!this.contractSessions.has(sessionId)) { throw error; } await this.finishContractSession(sessionId, 'interrupted'); }
+	}
+
+	private async finalizeContractSession(sessionId: string, context: ContractSessionContext, state: 'completed' | 'failed' | 'interrupted'): Promise<SessionRecord> {
+		await context.execution.drain(state === 'completed');
+		clearTimeout(context.expiry);
+		if (context.contract.runtime !== undefined) {
+			await this.ledger.append(sessionId, { kind: 'runtime.snapshot', actor: 'supervisor', evidenceGrade: 'computed', payload: JSON.parse(JSON.stringify(context.execution.snapshot())) as JsonObject });
+		}
+		context.executor.stop();
+		await this.recordGitDiff(sessionId, `contract_${sessionId}`, context.baseline, await captureGitSnapshot(context.workspacePath));
+		await this.recordContractDecisions(sessionId, context.contract);
+		await this.removeIsolatedWorktree(sessionId, `contract_${sessionId}`, context.worktree);
+		const session = await this.completeWithUsageGap(sessionId, context.expired ? 'interrupted' : state);
+		this.contractSessions.delete(sessionId);
+		return session;
 	}
 
 	private async cancelSession(sessionId: string): Promise<ApiResult> {
@@ -633,6 +876,11 @@ export class SupervisorService {
 		}
 		if (session.state !== 'running') {
 			return ok({ schemaVersion: 1, session });
+		}
+		const contract = this.contractSessions.get(sessionId);
+		if (contract !== undefined) {
+			contract.executor.stop();
+			return ok({ schemaVersion: 1, session: await this.finishContractSession(sessionId, 'interrupted') }, 202);
 		}
 		const relay = this.codexRelays.get(sessionId);
 		if (relay === undefined) {
@@ -651,11 +899,13 @@ export class SupervisorService {
 		if (contractYaml === undefined) {
 			throw new Error('contractYaml must be a non-empty YAML string');
 		}
-		const contractResult = parseContract(parseYaml(contractYaml, { maxAliasCount: 0 }));
-		if (!contractResult.ok) {
-			throw new Error(`invalid contract: ${contractResult.issues.join('; ')}`);
-		}
-		const decisions = evaluateContract(contractResult.contract, {
+		const contract = contractFromYaml(contractYaml)!;
+		const decisions = await this.recordContractDecisions(sessionId, contract);
+		return ok({ schemaVersion: 1, contractName: contract.name, decisions });
+	}
+
+	private async recordContractDecisions(sessionId: string, contract: AgentContract): Promise<readonly import('@agent-contract-lab/event-schema').PolicyDecision[]> {
+		const decisions = evaluateContract(contract, {
 			sessionId,
 			events: await this.ledger.listEvents(sessionId),
 			now: this.now,
@@ -668,7 +918,7 @@ export class SupervisorService {
 				payload: policyPayload(decision),
 			});
 		}
-		return ok({ schemaVersion: 1, contractName: contractResult.contract.name, decisions });
+		return decisions;
 	}
 
 	private async completeWithUsageGap(sessionId: string, state: 'completed' | 'failed' | 'interrupted'): Promise<SessionRecord> {
@@ -823,7 +1073,12 @@ export class SupervisorService {
 		if (workspacePath === undefined || actor === undefined || !isRunMode(runMode)) {
 			throw new Error('session requires workspacePath, actor, and a canonical runMode');
 		}
-		return { workspacePath, actor, runMode, ...(title === undefined ? {} : { title }) };
+		const contract = contractFromYaml(value.contractYaml);
+		const isolated = value.isolated ?? (runMode === 'contract');
+		if (typeof isolated !== 'boolean' || (runMode === 'contract') !== (contract !== undefined) || (isolated && contract === undefined)) {
+			throw new Error('contract sessions require contractYaml; isolation is supported only for contract sessions');
+		}
+		return { workspacePath, actor, runMode, isolated, ...(contract === undefined ? {} : { contract }), ...(title === undefined ? {} : { title }) };
 	}
 
 	private parseRunBody(body: unknown): RunBody {
@@ -839,7 +1094,8 @@ export class SupervisorService {
 		if (workspacePath === undefined || executable === undefined || args === undefined || typeof isolated !== 'boolean') {
 			throw new Error('run requires workspacePath, executable, an optional string args array, and an optional boolean isolated flag');
 		}
-		return { workspacePath, executable, args, actor, isolated };
+		const contract = contractFromYaml(value.contractYaml);
+		return { workspacePath, executable, args, actor, isolated, ...(contract === undefined ? {} : { contract }) };
 	}
 
 	private parseCodexSessionBody(body: unknown): CodexSessionBody {
@@ -847,6 +1103,7 @@ export class SupervisorService {
 		if (value === undefined) {
 			throw new Error('Codex session body must be an object');
 		}
+		if (value.contractYaml !== undefined || value.runtime !== undefined) { throw new Error('Native Codex observation does not enforce attached runtime policies; use supervised contract actions.'); }
 		const workspacePath = requiredString(value, 'workspacePath');
 		const task = requiredString(value, 'task');
 		const model = optionalString(value, 'model');

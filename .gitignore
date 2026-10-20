@@ -11,6 +11,8 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 .cache/
+.agent-contract-lab/
+.agent-contract-demo/
 .tmp/
 tmp/
 .DS_Store

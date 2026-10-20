@@ -4,6 +4,10 @@
     "rootDir": "src",
     "outDir": "dist"
   },
-  "references": [{ "path": "../../packages/event-schema" }],
+  "references": [
+    { "path": "../../packages/event-schema" },
+    { "path": "../../packages/policy-engine" },
+    { "path": "../../packages/adapter-sdk" }
+  ],
   "include": ["src/**/*"]
 }

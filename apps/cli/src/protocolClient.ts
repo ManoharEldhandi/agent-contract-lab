@@ -5,6 +5,7 @@ export type FetchLike = (input: string | URL, init?: {
 	readonly signal?: AbortSignal;
 	readonly headers?: Record<string, string>;
 	readonly body?: string;
+	readonly redirect?: 'error';
 }) => Promise<Response>;
 
 export type HealthOutcome =
@@ -47,7 +48,7 @@ export async function fetchHealth(rawUrl: string, options: FetchHealthOptions = 
 
 	let response: Response;
 	try {
-		response = await fetchImpl(target, { method: 'GET', signal: AbortSignal.timeout(options.timeoutMs ?? 1500) });
+		response = await fetchImpl(target, { method: 'GET', redirect: 'error', signal: AbortSignal.timeout(options.timeoutMs ?? 1500) });
 	} catch (error) {
 		return { kind: 'unreachable', url: target.href, message: error instanceof Error ? error.message : String(error) };
 	}

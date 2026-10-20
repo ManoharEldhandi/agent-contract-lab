@@ -1,8 +1,24 @@
 import * as vscode from 'vscode';
+import type { PolicyDecision } from '@agent-contract-lab/event-schema';
 import { discoverInstructionSources, formatInstructionSourceCount } from './instructionSources';
 import { evaluateContract, getEvidenceBundle, getSessionEventSnapshot, listSessions, parseCommandArray, startCodexSession, startManagedRun, trustWorkspace, type SupervisorSession } from './supervisorApi';
 import { describeConnection, type SupervisorConnection } from './supervisorClient';
 import { SupervisorRuntime } from './supervisorRuntime';
+
+interface ContractReport {
+	readonly sessionId: string;
+	readonly contractName: string;
+	readonly decisions: readonly PolicyDecision[];
+}
+
+function reportVerdict(decisions: readonly PolicyDecision[]): 'pass' | 'fail' | 'unknown' {
+	return decisions.some((decision) => decision.result === 'fail') ? 'fail'
+		: decisions.length === 0 || decisions.some((decision) => decision.result === 'unknown') ? 'unknown' : 'pass';
+}
+
+function verdictIcon(result: 'pass' | 'fail' | 'unknown'): string {
+	return result === 'pass' ? 'pass' : result === 'fail' ? 'error' : 'question';
+}
 
 class ContractLabView implements vscode.TreeDataProvider<vscode.TreeItem> {
 	private readonly changeEmitter = new vscode.EventEmitter<void>();
@@ -10,6 +26,7 @@ class ContractLabView implements vscode.TreeDataProvider<vscode.TreeItem> {
 	private supervisorDetail = 'Run "Connect Local Supervisor" to check availability.';
 	private discoveredInstructions = 0;
 	private sessions: readonly SupervisorSession[] = [];
+	private report?: ContractReport;
 
 	readonly onDidChangeTreeData = this.changeEmitter.event;
 
@@ -26,6 +43,7 @@ class ContractLabView implements vscode.TreeDataProvider<vscode.TreeItem> {
 					this.item(`Local supervisor: ${this.supervisorLabel}`, 'plug', 'agent-contract-lab.connectSupervisor', this.supervisorDetail),
 					this.item('Trust workspace for managed runs', 'shield', 'agent-contract-lab.trustWorkspace'),
 					this.item('Start monitored run', 'play', 'agent-contract-lab.startMonitoredRun'),
+					this.item('Guard command launch', 'shield', 'agent-contract-lab.guardCommandLaunch'),
 					this.item('Log a Codex task', 'sparkle', 'agent-contract-lab.startCodexSession'),
 					this.item('Refresh recorded sessions', 'refresh', 'agent-contract-lab.refreshSessions'),
 					...this.sessions.map((session) => this.item(
@@ -42,14 +60,13 @@ class ContractLabView implements vscode.TreeDataProvider<vscode.TreeItem> {
 					this.item('Inspect workspace instruction sources', 'search', 'agent-contract-lab.openEffectiveInstructions'),
 				];
 			case 'policies':
-				return [
-					this.item('Deterministic policy engine: planned', 'shield'),
-					this.item('No active policy decisions', 'circle-outline'),
-				];
+				return this.report === undefined
+					? [this.item('Evaluate a contract', 'shield', 'agent-contract-lab.runContractSuite')]
+					: this.report.decisions.map((decision) => this.item(`${decision.result.toUpperCase()} ${decision.ruleId}`, verdictIcon(decision.result), 'agent-contract-lab.openSessionLog', decision.message, [this.report!.sessionId]));
 			case 'contracts':
 				return [
-					this.item('Run contract suite', 'beaker', 'agent-contract-lab.runContractSuite'),
-					this.item('No contract reports yet', 'history'),
+					this.item('Evaluate contract', 'beaker', 'agent-contract-lab.runContractSuite'),
+					...(this.report === undefined ? [] : [this.item(`${reportVerdict(this.report.decisions).toUpperCase()}: ${this.report.contractName}`, verdictIcon(reportVerdict(this.report.decisions)), 'agent-contract-lab.openSessionLog', `${this.report.decisions.length} assertions for ${this.report.sessionId}`, [this.report.sessionId])]),
 				];
 		}
 	}
@@ -70,6 +87,11 @@ class ContractLabView implements vscode.TreeDataProvider<vscode.TreeItem> {
 		this.changeEmitter.fire();
 	}
 
+	setReport(report: ContractReport): void {
+		this.report = report;
+		this.changeEmitter.fire();
+	}
+
 	private item(label: string, icon: string, command?: string, tooltip?: string, argumentsValue?: readonly unknown[]): vscode.TreeItem {
 		const item = new vscode.TreeItem(label, vscode.TreeItemCollapsibleState.None);
 		item.iconPath = new vscode.ThemeIcon(icon);
@@ -87,14 +109,16 @@ export function activate(context: vscode.ExtensionContext): void {
 	const output = vscode.window.createOutputChannel('Agent Contract Lab');
 	const sessionView = new ContractLabView('session');
 	const instructionView = new ContractLabView('instructions');
+	const policyView = new ContractLabView('policies');
+	const contractView = new ContractLabView('contracts');
 	const supervisorRuntime = new SupervisorRuntime({ extensionPath: context.extensionPath });
 
 	context.subscriptions.push(
 		output,
 		vscode.window.registerTreeDataProvider('agent-contract-lab.session', sessionView),
 		vscode.window.registerTreeDataProvider('agent-contract-lab.instructions', instructionView),
-		vscode.window.registerTreeDataProvider('agent-contract-lab.policies', new ContractLabView('policies')),
-		vscode.window.registerTreeDataProvider('agent-contract-lab.contracts', new ContractLabView('contracts')),
+		vscode.window.registerTreeDataProvider('agent-contract-lab.policies', policyView),
+		vscode.window.registerTreeDataProvider('agent-contract-lab.contracts', contractView),
 		vscode.commands.registerCommand('agent-contract-lab.connectSupervisor', async () => {
 			if (!requireTrustedWorkspace()) {
 				return;
@@ -155,13 +179,8 @@ export function activate(context: vscode.ExtensionContext): void {
 			if (workspacePath === undefined) {
 				return;
 			}
-			const input = await vscode.window.showInputBox({ title: 'Start monitored command', prompt: 'Command as a JSON string array', value: '["npm", "test"]' });
-			if (input === undefined) {
-				return;
-			}
-			const command = parseCommandArray(input);
+			const command = await selectCommand();
 			if (command === undefined) {
-				vscode.window.showWarningMessage('Enter a non-empty JSON array of command strings.');
 				return;
 			}
 			const url = configuredSupervisorUrl();
@@ -175,6 +194,39 @@ export function activate(context: vscode.ExtensionContext): void {
 				await refreshSessions(sessionView, output);
 			} catch (error) {
 				vscode.window.showWarningMessage(`Could not start monitored run: ${error instanceof Error ? error.message : String(error)}`);
+			}
+		}),
+		vscode.commands.registerCommand('agent-contract-lab.guardCommandLaunch', async () => {
+			if (!requireTrustedWorkspace()) {
+				return;
+			}
+			const workspacePath = activeWorkspacePath();
+			const url = configuredSupervisorUrl();
+			if (workspacePath === undefined || url === undefined) {
+				return;
+			}
+			try {
+				const contractYaml = await selectContractYaml(workspacePath);
+				if (contractYaml === undefined) {
+					return;
+				}
+				const command = await selectCommand();
+				if (command === undefined) {
+					return;
+				}
+				await ensureSupervisor(url, supervisorRuntime);
+				const session = await startManagedRun(url, workspacePath, command[0]!, command.slice(1), { contractYaml, isolated: true });
+				await followSessionLog(url, session.sessionId, sessionView, output);
+				const result = await evaluateContract(url, session.sessionId, contractYaml);
+				const report = { ...result, sessionId: session.sessionId };
+				policyView.setReport(report);
+				contractView.setReport(report);
+				output.appendLine(`Contract ${result.contractName}: ${reportVerdict(result.decisions).toUpperCase()}`);
+				for (const decision of result.decisions) {
+					output.appendLine(`${decision.result.toUpperCase()} ${decision.ruleId}: ${decision.message}`);
+				}
+			} catch (error) {
+				vscode.window.showWarningMessage(`Could not run guarded command: ${error instanceof Error ? error.message : String(error)}`);
 			}
 		}),
 		vscode.commands.registerCommand('agent-contract-lab.startCodexSession', async () => {
@@ -242,24 +294,14 @@ export function activate(context: vscode.ExtensionContext): void {
 				if (selected === undefined) {
 					return;
 				}
-				const file = await vscode.window.showOpenDialog({
-					title: 'Select contract YAML',
-					defaultUri: vscode.Uri.file(workspacePath),
-					canSelectFiles: true,
-					canSelectFolders: false,
-					canSelectMany: false,
-					filters: { 'YAML contracts': ['yaml', 'yml'] },
-				});
-				const contractUri = file?.[0];
-				if (contractUri === undefined) {
+				const contractYaml = await selectContractYaml(workspacePath);
+				if (contractYaml === undefined) {
 					return;
 				}
-				if (vscode.workspace.getWorkspaceFolder(contractUri) === undefined) {
-					vscode.window.showWarningMessage('Select a contract file from the trusted workspace.');
-					return;
-				}
-				const contractYaml = new TextDecoder().decode(await vscode.workspace.fs.readFile(contractUri));
 				const result = await evaluateContract(url, selected.session.sessionId, contractYaml);
+				const report = { ...result, sessionId: selected.session.sessionId };
+				policyView.setReport(report);
+				contractView.setReport(report);
 				output.clear();
 				output.appendLine(`Contract ${result.contractName} for ${selected.session.sessionId}`);
 				for (const decision of result.decisions) {
@@ -304,6 +346,35 @@ export function activate(context: vscode.ExtensionContext): void {
 			}
 		}),
 	);
+}
+
+async function selectCommand(): Promise<readonly string[] | undefined> {
+	const input = await vscode.window.showInputBox({ title: 'Command argument vector', prompt: 'Command as a JSON string array', value: '["npm", "test"]' });
+	if (input === undefined) {
+		return undefined;
+	}
+	const command = parseCommandArray(input);
+	if (command === undefined) {
+		vscode.window.showWarningMessage('Enter a non-empty JSON array of command strings.');
+	}
+	return command;
+}
+
+async function selectContractYaml(workspacePath: string): Promise<string | undefined> {
+	const selected = await vscode.window.showOpenDialog({
+		title: 'Select contract YAML', defaultUri: vscode.Uri.file(workspacePath),
+		canSelectFiles: true, canSelectFolders: false, canSelectMany: false,
+		filters: { 'YAML contracts': ['yaml', 'yml'] },
+	});
+	const contractUri = selected?.[0];
+	if (contractUri === undefined) {
+		return undefined;
+	}
+	if (vscode.workspace.getWorkspaceFolder(contractUri) === undefined) {
+		vscode.window.showWarningMessage('Select a contract file from the trusted workspace.');
+		return undefined;
+	}
+	return new TextDecoder().decode(await vscode.workspace.fs.readFile(contractUri));
 }
 
 function requireTrustedWorkspace(): boolean {

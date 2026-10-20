@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { formatInstructionSourceCount, instructionPatterns } from '../instructionSources';
-import { evidenceBundlePath, parseCommandArray, sessionEventQueryPath } from '../supervisorApi';
+import { evidenceBundlePath, managedRunBody, parseCommandArray, sessionEventQueryPath } from '../supervisorApi';
 import { describeConnection, interpretHealthJson } from '../supervisorClient';
 import { bundledSupervisorPath, supervisorEnvironment } from '../supervisorRuntime';
 
@@ -56,6 +56,17 @@ suite('Managed command input', () => {
 		assert.strictEqual(parseCommandArray('npm test'), undefined);
 		assert.strictEqual(parseCommandArray('["npm", 1]'), undefined);
 		assert.strictEqual(parseCommandArray('[]'), undefined);
+	});
+
+	test('guarded launches send immutable policy and isolation options without changing ordinary runs', () => {
+		const args = ['--test'];
+		const guarded = managedRunBody('/workspace', 'node', args, { contractYaml: 'version: 1\nname: guarded', isolated: true });
+		args[0] = '--eval';
+		assert.deepStrictEqual(guarded.args, ['--test']);
+		assert.strictEqual(guarded.isolated, true);
+		assert.strictEqual(guarded.contractYaml, 'version: 1\nname: guarded');
+		assert.ok(Object.isFrozen(guarded.args));
+		assert.strictEqual(managedRunBody('/workspace', 'node', []).contractYaml, undefined);
 	});
 });
 

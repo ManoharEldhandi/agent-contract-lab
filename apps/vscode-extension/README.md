@@ -7,3 +7,13 @@ Start `agent-contract-supervisor` locally, open a trusted workspace, then use th
 The extension connects only to the loopback supervisor URL configured by `agent-contract-lab.supervisorUrl`. It does not start repository code during activation. The supervisor independently requires an explicit workspace-trust record before it launches a command.
 
 The timeline shows evidence grades and structured payloads. It can show a model-provided safe summary, but never claims access to private model reasoning. Token totals are shown only when an integration reports them.
+
+**Guard Command Launch** selects a YAML contract and checks a command before
+running it in a detached worktree. The Policies and Contracts views show the real
+final decisions and link back to session evidence. A launch check does not
+intercept internal agent tools or child processes; unsupported pre-action claims
+remain unknown. Instruction Sources shows discovered candidates, not proof of
+vendor-specific effective instructions.
+
+From source, `npm run demo` in the repository root exercises the complete
+credential-free contract workflow with the latest verified Model Logger SDK.

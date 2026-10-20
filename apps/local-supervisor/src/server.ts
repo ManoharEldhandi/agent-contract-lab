@@ -7,6 +7,7 @@ import { buildHealthResponse, createIdentity } from './health';
 import { route } from './router';
 import { SupervisorService } from './service';
 import type { CodexRelayFactory } from './codexRelay';
+import type { ModelProvider } from './modelGateway';
 import { defaultDataDirectory } from './state';
 import { SUPERVISOR_VERSION } from './version';
 
@@ -24,6 +25,7 @@ export interface StartOptions {
 	readonly authToken?: string;
 	/** Test-only direct-agent relay override. */
 	readonly codexRelayFactory?: CodexRelayFactory;
+	readonly modelProvider?: ModelProvider;
 }
 
 export interface RunningSupervisor {
@@ -119,6 +121,7 @@ export async function startSupervisor(options: StartOptions = {}): Promise<Runni
 		instanceId: identity.instanceId,
 		now: options.now,
 		codexRelayFactory: options.codexRelayFactory,
+		modelProvider: options.modelProvider,
 	});
 	const server: Server = createServer(createRequestListener(health, service));
 

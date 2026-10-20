@@ -3,12 +3,16 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+	type ActionDecision,
+	type ContractActionResult,
 	type EventKind,
 	type JsonObject,
 	type JsonValue,
+	type KnowledgeDocumentInput,
 	type RunMode,
 	type SessionEvent,
 	type SessionRecord,
+	type SupervisorAction,
 	type TokenUsage,
 	type UnknownReason,
 } from '@agent-contract-lab/event-schema';
@@ -16,6 +20,7 @@ import { normalizeProviderUsage, type TokenUsageMapping, type UsageNormalization
 
 export * from './usage';
 export * from './vendorAdapters';
+export * from './modelLogger';
 
 export const DEFAULT_SUPERVISOR_URL = 'http://127.0.0.1:43199' as const;
 
@@ -25,6 +30,7 @@ export interface FetchLike {
 		readonly headers?: Record<string, string>;
 		readonly body?: string;
 		readonly signal?: AbortSignal;
+		readonly redirect?: 'error';
 	}): Promise<Response>;
 }
 
@@ -40,6 +46,17 @@ export interface StartSessionOptions {
 	readonly runMode?: Extract<RunMode, 'observe' | 'managed'>;
 	/** A user-visible task name. It is redacted by the supervisor before storage. */
 	readonly title?: string;
+}
+
+export interface ActionTelemetry {
+	observe(action: SupervisorAction, operation: () => Promise<ContractActionResult>): Promise<ContractActionResult>;
+}
+
+export interface StartContractSessionOptions extends Omit<StartSessionOptions, 'runMode'> {
+	readonly contractYaml: string;
+	readonly isolated?: boolean;
+	readonly telemetry?: ActionTelemetry;
+	readonly knowledgeDocuments?: readonly KnowledgeDocumentInput[];
 }
 
 export interface ToolCall {
@@ -173,6 +190,41 @@ export class LocalSupervisorClient {
 		return new AgentContractSession(this, response.session, options.actor);
 	}
 
+	async startContractSession(options: StartContractSessionOptions): Promise<AgentContractSession> {
+		const response = await this.request<SessionResponse>('/v1/sessions', 'POST', {
+			workspacePath: options.workspacePath, actor: options.actor, runMode: 'contract',
+			contractYaml: options.contractYaml, isolated: options.isolated ?? true,
+			...(options.knowledgeDocuments === undefined ? {} : { knowledgeDocuments: options.knowledgeDocuments.map((document) => ({ ...document })) }),
+			...(options.title === undefined ? {} : { title: options.title }),
+		});
+		return new AgentContractSession(this, response.session, options.actor, options.telemetry);
+	}
+
+	async executeAction(sessionId: string, action: SupervisorAction): Promise<ContractActionResult> {
+		const body: JsonObject = action.kind === 'command'
+			? { kind: action.kind, executable: action.executable, args: [...(action.args ?? [])], ...(action.timeoutMs === undefined ? {} : { timeoutMs: action.timeoutMs }) }
+			: action.kind === 'file.write' ? { kind: action.kind, path: action.path, content: action.content }
+				: action.kind === 'file.read' ? { kind: action.kind, path: action.path }
+					: action.kind === 'knowledge.search' ? { kind: action.kind, query: action.query, ...(action.limit === undefined ? {} : { limit: action.limit }) }
+						: { kind: action.kind, model: action.model, prompt: action.prompt, maxOutputTokens: action.maxOutputTokens,
+							...(action.knowledgeQuery === undefined ? {} : { knowledgeQuery: action.knowledgeQuery }), ...(action.timeoutMs === undefined ? {} : { timeoutMs: action.timeoutMs }) };
+		const response = await this.request<{ readonly action: ContractActionResult }>(`/v1/sessions/${encodeURIComponent(sessionId)}/actions`, 'POST', body, 35_000);
+		if (!['completed', 'failed', 'blocked'].includes(response.action?.status) || typeof response.action?.success !== 'boolean' || typeof response.action?.decision?.allowed !== 'boolean') {
+			throw new SupervisorRequestError(500, 'Supervisor returned malformed action data.');
+		}
+		return response.action;
+	}
+
+	async getRuntime(sessionId: string): Promise<JsonObject> {
+		const result = await this.request<{ readonly runtime: JsonObject }>(`/v1/sessions/${encodeURIComponent(sessionId)}/runtime`, 'GET');
+		return result.runtime;
+	}
+
+	async transitionPhase(sessionId: string, phase: string): Promise<ActionDecision> {
+		const result = await this.request<{ readonly decision: ActionDecision }>(`/v1/sessions/${encodeURIComponent(sessionId)}/workflow`, 'POST', { phase });
+		return result.decision;
+	}
+
 	async emit(sessionId: string, actor: string, kind: EventKind, payload: JsonObject, correlationId?: string): Promise<SessionEvent> {
 		const response = await this.request<EventResponse>(`/v1/sessions/${encodeURIComponent(sessionId)}/events`, 'POST', {
 			kind,
@@ -216,14 +268,15 @@ export class LocalSupervisorClient {
 		return response;
 	}
 
-	private async request<T>(pathname: string, method: string, body?: JsonObject): Promise<T> {
+	private async request<T>(pathname: string, method: string, body?: JsonObject, timeoutMs = 5_000): Promise<T> {
 		let response: Response;
 		try {
 			response = await this.fetchImpl(new URL(pathname, this.baseUrl), {
 				method,
+				redirect: 'error',
 				headers: { 'content-type': 'application/json', 'x-agent-contract-token': this.options.token },
 				...(body === undefined ? {} : { body: JSON.stringify(body) }),
-				signal: AbortSignal.timeout(5_000),
+				signal: AbortSignal.timeout(timeoutMs),
 			});
 		} catch (error) {
 			throw new SupervisorRequestError(0, error instanceof Error ? error.message : String(error));
@@ -248,7 +301,18 @@ export class AgentContractSession {
 		private readonly client: LocalSupervisorClient,
 		readonly record: SessionRecord,
 		private readonly actor: string,
+		private readonly telemetry?: ActionTelemetry,
 	) {}
+
+	getRuntime(): Promise<JsonObject> { return this.client.getRuntime(this.record.sessionId); }
+
+	transitionPhase(phase: string): Promise<ActionDecision> { return this.client.transitionPhase(this.record.sessionId, phase); }
+
+	executeAction(action: SupervisorAction): Promise<ContractActionResult> {
+		const snapshot = Object.freeze(action.kind === 'command' ? { ...action, args: Object.freeze([...(action.args ?? [])]) } : { ...action });
+		const operation = (): Promise<ContractActionResult> => this.client.executeAction(this.record.sessionId, snapshot);
+		return this.telemetry === undefined ? operation() : this.telemetry.observe(snapshot, operation);
+	}
 
 	/** Compatibility shorthand for an AI-visible message. Prefer the role-specific methods below. */
 	message(text: string): Promise<SessionEvent> {
